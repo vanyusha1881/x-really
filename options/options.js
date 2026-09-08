@@ -326,64 +326,27 @@ async function loadSettings() {
 }
 
 /**
- * 绑定校验：推文多为图文，模型必须支持多模态（图片理解）才允许保存。
- * 静态识别 + 实测（走 TEST_VISION overrides，不需先保存配置）。
- * @returns {{ok:boolean, warn?:string, reason?:string}}
+ * 多模态能力提示（**不拦截保存**）：仅给出建议信息。
+ * 推理能力优先——纯文本模型（如 deepseek-chat）往往比弱视觉模型判断更准，
+ * 不支持图片时插件会自动降级为纯文字分析，不影响使用。
+ * @returns {{note?:string}}
  */
-async function ensureVisionCapable(s) {
+async function probeVisionNote(s) {
   const staticV = xrDetectVisionStatic(s.model);
   if (staticV === "no") {
     return {
-      ok: false,
-      reason: `模型 ${s.model} 不支持多模态。图文推文需要读图能力，请更换支持图片理解的模型（如 gpt-4o、glm-4v-flash、qwen-vl-plus），或点击「实测检测」验证后再保存`,
+      note: `ℹ️ ${s.model} 可能是纯文本模型（不支持图片）。图文推文将只分析文字部分，判定通常依然可靠`,
     };
   }
 
-  // 已有实测缓存：yes 直接放行，no 直接拦截
+  // 已有实测缓存：直接提示
   const stored = await chrome.storage.local.get(XR_CAPS_CACHE_KEY);
   const cached = (stored[XR_CAPS_CACHE_KEY] || {})[s.model];
-  if (cached) {
-    if (cached.vision === "yes") return { ok: true };
-    if (cached.vision === "no") {
-      return {
-        ok: false,
-        reason: `实测确认模型 ${s.model} 不支持图片输入，无法绑定。请更换支持多模态的模型`,
-      };
-    }
+  if (cached && cached.vision === "yes") return {};
+  if (cached && cached.vision === "no") {
+    return { note: `ℹ️ ${s.model} 不支持图片输入，图文推文将只分析文字部分` };
   }
-
-  // 无实测缓存：绑定前自动实测一次（无需先保存）
-  let resp;
-  try {
-    resp = await chrome.runtime.sendMessage({
-      type: "TEST_VISION",
-      overrides: { baseUrl: s.baseUrl, apiKey: s.apiKey, model: s.model },
-    });
-  } catch {
-    resp = { ok: false, error: "扩展通信失败" };
-  }
-
-  if (resp && resp.ok) {
-    const { vision, note: n } = resp.info;
-    if (vision === "yes") return { ok: true };
-    if (vision === "no") {
-      return {
-        ok: false,
-        reason: `实测确认模型 ${s.model} 不支持图片输入，无法绑定。请更换支持多模态的模型`,
-      };
-    }
-    // unknown：无法确认（多为网络/鉴权问题），不拦截但提示
-    return {
-      ok: true,
-      warn: `⚠️ 已保存，但未能确认多模态能力${n ? "（" + n + "）" : ""}。建议点击「实测检测」复核`,
-    };
-  }
-
-  // 实测请求本身失败（如未填 Key）：不拦截保存，提示稍后验证
-  return {
-    ok: true,
-    warn: "⚠️ 已保存。绑定前未能完成多模态实测（" + ((resp && resp.error) || "未知错误") + "），请点击「实测检测」验证",
-  };
+  return {}; // 未知能力：不打扰用户，分析时自动探测
 }
 
 async function save() {
@@ -392,30 +355,24 @@ async function save() {
   const idle = "保存设置";
 
   btn.disabled = true;
-  btn.innerHTML = '<span class="xr-spin"></span> 检测模型中…';
-  setTestResult("⏳ 正在校验模型多模态能力…", "info");
+  btn.innerHTML = '<span class="xr-spin"></span> 保存中…';
 
-  let check;
+  let hint;
   try {
-    check = await ensureVisionCapable(s);
+    hint = await probeVisionNote(s);
   } finally {
     btn.disabled = false;
     btn.textContent = idle;
   }
 
-  if (!check.ok) {
-    setTestResult("🚫 绑定失败：" + check.reason, "err");
-    return;
-  }
-
   await chrome.storage.sync.set({ ...s, provider: currentProviderId });
   $("dirtyHint").classList.add("hidden");
   updateCapBadge();
-  if (check.warn) {
-    setTestResult(check.warn, "info");
-    showToast("✅ 已保存（多模态待确认）");
+  if (hint.note) {
+    setTestResult(hint.note, "info");
+    showToast("✅ 已保存（纯文字模式）");
   } else {
-    setTestResult("✅ 保存成功，模型已通过多模态校验", "ok");
+    setTestResult("✅ 保存成功", "ok");
     showToast("✅ 已保存");
   }
 }
