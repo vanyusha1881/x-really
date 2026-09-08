@@ -407,6 +407,9 @@ async function testConnection() {
 
 loadSettings();
 
+// 版本徽标：读 manifest，自动跟随版本号
+$("verBadge").textContent = "v" + chrome.runtime.getManifest().version;
+
 $("saveBtn").addEventListener("click", save);
 $("testBtn").addEventListener("click", testConnection);
 $("fetchModels").addEventListener("click", fetchModels);

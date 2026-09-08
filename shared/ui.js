@@ -82,6 +82,7 @@ function xrBuildCard(resp) {
       ${imgNote}
       ${r.searchOff ? `<div class="xr-foot">联网检索已关闭，本次基于 AI 知识判断</div>` : r.searched === false ? `<div class="xr-foot">联网检索不可用，本次基于 AI 知识判断</div>` : ""}
       ${r.rumorDowngraded ? `<div class="xr-foot">⚠️ 初判"谣言"未通过复核（无确切矛盾事实），已降级为存疑</div>` : ""}
+      ${r.cached ? `<div class="xr-foot">⚡ 30 分钟内相同内容，已复用缓存结果</div>` : ""}
       ${receipt}
     `;
   }
