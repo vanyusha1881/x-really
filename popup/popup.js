@@ -69,7 +69,7 @@ async function runCheck() {
 function setChecking(on) {
   const btn = $("checkBtn");
   btn.disabled = on;
-  btn.innerHTML = on ? '<span class="xr-spin"></span><span>AI 分析中…</span>' : IDLE_BTN_HTML;
+  btn.innerHTML = on ? '<span class="xr-spin"></span><span>联网核查中…</span>' : IDLE_BTN_HTML;
 }
 
 // ---------- 历史记录 ----------

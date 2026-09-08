@@ -114,9 +114,9 @@
     btn.classList.remove("xr-loading");
     btn.innerHTML = ICON_SVG;
     if (resp && resp.ok) {
-      const meta = XR_VERDICT_META[resp.result.verdict] || XR_VERDICT_META.unknown;
+      const meta = XR_VERDICT_META[resp.result.verdict] || XR_VERDICT_META.suspected;
       btn.classList.add(meta.cls);
-      btn.title = `X-Really：${meta.icon} ${meta.label} · 置信度 ${resp.result.confidence}%`;
+      btn.title = `X-Really：${meta.icon} ${meta.label}`;
     } else {
       btn.title = "检查失败：" + ((resp && resp.error) || "未知错误");
     }

@@ -7,6 +7,7 @@ const XR_DEFAULTS = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   model: "gpt-4o-mini",
+  enableSearch: true,
 };
 const XR_MODEL_CACHE_KEY = "xrModelCache"; // { [cacheKey]: { ts, models } }
 const XR_CAPS_CACHE_KEY = "xrCaps"; // { [model]: { vision, note, ts } }
@@ -21,6 +22,7 @@ function collectSettings() {
     baseUrl: $("optBaseUrl").value.trim() || XR_DEFAULTS.baseUrl,
     apiKey: $("optApiKey").value.trim(),
     model: $("optModel").value.trim() || XR_DEFAULTS.model,
+    enableSearch: $("optSearch").checked,
   };
 }
 
@@ -312,6 +314,7 @@ async function loadSettings() {
   $("optBaseUrl").value = s.baseUrl;
   $("optApiKey").value = s.apiKey;
   $("optModel").value = s.model;
+  $("optSearch").checked = s.enableSearch !== false;
 
   // 回显预设选中状态
   const p = xrFindProvider(s.baseUrl);
@@ -391,6 +394,7 @@ document.addEventListener("keydown", (e) => {
 for (const id of ["optBaseUrl", "optApiKey"]) {
   $(id).addEventListener("input", markDirty);
 }
+$("optSearch").addEventListener("change", markDirty);
 $("optBaseUrl").addEventListener("change", async () => {
   // baseUrl 变化时重新匹配预设（仅更新高亮与链接，不覆盖用户输入）
   const p = xrFindProvider($("optBaseUrl").value.trim());

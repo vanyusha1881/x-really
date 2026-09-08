@@ -116,10 +116,13 @@
   font-weight: 700;
   color: var(--xr-accent, #e7e9ea);
 }
-.xr-conf {
-  margin-left: auto;
-  font-size: 12px;
+.xr-src {
+  margin-top: 8px;
+  font-size: 11.5px;
   color: #8b98a5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .xr-close {
   border: 0;

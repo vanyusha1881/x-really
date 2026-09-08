@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "X-Really · 推文谣言检查器",
   "description": "在 X (Twitter) 上检查推文内容是否为谣言：AI 分析可信度、给出理由与建议。支持任意 OpenAI 兼容接口。",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",

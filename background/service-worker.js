@@ -1,44 +1,44 @@
-// X-Really 后台服务：接收检查请求，调用 OpenAI 兼容接口完成谣言分析
-// v0.2: 新增模型列表拉取（/models）与多模态能力实测
+// X-Really 后台服务：接收检查请求，联网检索资料 + 调用 OpenAI 兼容接口完成谣言核查
+// v0.3: 明确三档判定（谣言/不是谣言/存疑）、联网搜索（Bing→DuckDuckGo 兜底）、
+//       移除置信度/建议，结果附引用来源
 
 const XR_DEFAULTS = {
   baseUrl: "https://api.openai.com/v1",
   apiKey: "",
   model: "gpt-4o-mini",
+  enableSearch: true,
 };
 
 const XR_MAX_TEXT_LEN = 4000;
 const XR_HISTORY_KEY = "xrHistory";
 const XR_HISTORY_MAX = 20;
+const XR_SEARCH_TIMEOUT = 8000;
+const XR_SEARCH_MAX_RESULTS = 6;
 
 // 1x1 测试图片，用于多模态能力实测
 const XR_TEST_IMAGE =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
-const XR_SYSTEM_PROMPT = `你是一位专业的社交媒体内容事实核查员，任务是判断用户提供的推文内容是否包含谣言或虚假信息。
+const XR_SYSTEM_PROMPT = `你是一位严格的事实核查员，必须对收到的推文做出明确的真假判断。
 
-请按以下维度分析：
-1. 事实性陈述：文中是否存在可核查的事实性断言（数据、事件、引语、因果论断等）
-2. 可疑信号：情绪化煽动、绝对化表述、无信源、诱导转发、"震惊体"等谣言常见特征
-3. 常识与逻辑：内容是否违背基本常识、内部逻辑是否自洽
-4. 已知谣言模式：是否与广为流传的谣言套路或已被辟谣的说法相符
+判断规则（必须遵守）：
+1. 内容明显虚假、与可靠信源矛盾、或符合已被辟谣的谣言模式 → 判定"rumor"（谣言）
+2. 内容与已知事实相符、或信源可靠且无矛盾 → 判定"not_rumor"（不是谣言）
+3. "suspected"（存疑）只允许在确实无法判断时使用：信息过少、话题完全超出可查证范围、且搜索后仍无任何相关资料。严禁用"存疑"回避明确判断，绝大多数推文都应给出 rumor 或 not_rumor。
 
-注意：你无法实时联网核实，请基于自身知识审慎判断，不要武断下结论。
+你会收到推文原文，以及（可能提供的）网络搜索资料。请：
+1. 优先依据搜索资料中信源可靠的内容（权威媒体、政府机构、专业辟谣平台）进行判断
+2. 搜索资料仅供参考，注意甄别其可信度与时效性；资料与推文无关时忽略之
+3. 没有可用搜索资料时，基于你自身知识分析判断，同样必须给出明确结论
+4. 输出必须简洁明确，不要冗余说明
 
 严格输出以下 JSON（不要输出 JSON 以外的任何文字）：
 {
-  "verdict": "rumor" | "suspected" | "credible" | "unknown",
-  "confidence": 0-100 的整数，表示你对该判断的置信度,
-  "summary": "一句话结论（不超过 60 字）",
-  "reasons": ["理由1", "理由2"]（2-4 条，每条不超过 80 字）,
-  "advice": "给读者的一条建议（不超过 60 字）"
-}
-
-verdict 含义：
-- rumor：内容包含明显虚假、已被证伪或高度可信为谣言的信息
-- suspected：存在可疑信号但证据不足，无法确认也无法证伪
-- credible：未见明显谣言特征，内容与已知事实不冲突
-- unknown：信息无法评估（过短、过于模糊或超出判断能力）`;
+  "verdict": "rumor" | "not_rumor" | "suspected",
+  "summary": "一句话明确结论（不超过 40 字），直接回答是否是谣言",
+  "reasons": ["依据1", "依据2"]（最多 3 条，每条不超过 40 字，注明依据来自"搜索资料"还是"知识分析"）,
+  "sources": ["支撑结论的来源域名，如 www.reuters.com"]（仅当使用了搜索资料时提供，最多 3 个，未用搜索资料则为空数组）
+}`;
 
 // ---------- 工具 ----------
 
@@ -78,6 +78,104 @@ async function requireEndpoint(settings) {
   if (!settings.apiKey && !isLocal) {
     throw makeError("请先填写并保存 API Key", "NO_API_KEY");
   }
+}
+
+// ---------- 联网搜索（Bing → DuckDuckGo 兜底，无需 API Key） ----------
+
+function fetchWithTimeout(url, opts = {}, ms = XR_SEARCH_TIMEOUT) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+}
+
+function decodeEntities(s) {
+  return String(s)
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ");
+}
+
+function stripTags(s) {
+  return decodeEntities(String(s).replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+async function searchBing(query) {
+  const res = await fetchWithTimeout(
+    "https://www.bing.com/search?q=" + encodeURIComponent(query) + "&count=10&setlang=zh-hans",
+    { headers: { "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" } }
+  );
+  if (!res.ok) throw new Error("bing http " + res.status);
+  const html = await res.text();
+
+  const results = [];
+  const re = /<li class="b_algo"[\s\S]*?<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/g;
+  let m;
+  while ((m = re.exec(html)) && results.length < XR_SEARCH_MAX_RESULTS) {
+    const url = m[1];
+    const title = stripTags(m[2]);
+    if (title && /^https?:/i.test(url)) {
+      results.push({ url, title, snippet: stripTags(m[3]) });
+    }
+  }
+  if (!results.length) throw new Error("bing no results");
+  return results;
+}
+
+async function searchDuckDuckGo(query) {
+  const res = await fetchWithTimeout(
+    "https://html.duckduckgo.com/html/?q=" + encodeURIComponent(query),
+    { headers: { "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8" } }
+  );
+  if (!res.ok) throw new Error("ddg http " + res.status);
+  const html = await res.text();
+
+  const links = [];
+  const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+  let m;
+  while ((m = re.exec(html)) && links.length < XR_SEARCH_MAX_RESULTS) {
+    let url = m[1];
+    const uddg = /[?&]uddg=([^&]+)/.exec(url);
+    if (uddg) {
+      try {
+        url = decodeURIComponent(uddg[1]);
+      } catch {
+        /* 保留原链接 */
+      }
+    }
+    if (/^https?:/i.test(url)) links.push({ url, title: stripTags(m[2]) });
+  }
+
+  const snips = [];
+  const snRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+  while ((m = snRe.exec(html)) && snips.length < links.length) snips.push(stripTags(m[1]));
+
+  const results = links.map((l, i) => ({ ...l, snippet: snips[i] || "" }));
+  if (!results.length) throw new Error("ddg no results");
+  return results;
+}
+
+/** 依次尝试多个搜索引擎，全部失败时抛出 SEARCH_ERROR */
+async function webSearch(query) {
+  const q = query.replace(/\s+/g, " ").trim().slice(0, 120);
+  for (const engine of [searchBing, searchDuckDuckGo]) {
+    try {
+      return await engine(q);
+    } catch {
+      /* 尝试下一个引擎 */
+    }
+  }
+  throw makeError("联网搜索不可用", "SEARCH_ERROR");
 }
 
 // ---------- 消息路由 ----------
@@ -135,8 +233,19 @@ async function checkText(rawText) {
     throw makeError("尚未配置 API Key，请先在扩展设置中完成配置", "NO_API_KEY");
   }
 
-  const content = await callLLM(text, settings);
+  // 联网检索资料（失败不阻塞，降级为纯知识分析）
+  let materials = null;
+  if (settings.enableSearch) {
+    try {
+      materials = await webSearch(text);
+    } catch {
+      materials = null;
+    }
+  }
+
+  const content = await callLLM(text, settings, { materials });
   const result = parseVerdict(content);
+  result.searched = !!(settings.enableSearch && materials && materials.length);
   pushHistory(text, result).catch(() => {});
   return result;
 }
@@ -181,10 +290,8 @@ async function listModels() {
 
   let models = [];
   if (Array.isArray(data?.data)) {
-    // OpenAI 格式：{ data: [{ id }] }
     models = data.data.map((m) => m?.id).filter((x) => typeof x === "string");
   } else if (Array.isArray(data?.models)) {
-    // Ollama 原生格式等：{ models: [{ name }] }
     models = data.models.map((m) => (typeof m === "string" ? m : m?.name || m?.model));
   } else if (Array.isArray(data)) {
     models = data.map((m) => (typeof m === "string" ? m : m?.id || m?.name));
@@ -248,11 +355,22 @@ async function testVision() {
 }
 
 async function callLLM(text, settings, opts = {}) {
+  let userContent = text;
+  if (opts.materials && opts.materials.length) {
+    const lines = opts.materials.map(
+      (r, i) => `[${i + 1}] ${r.title}\n${r.snippet || "（无摘要）"}\n来源：${hostOf(r.url) || r.url}`
+    );
+    userContent =
+      `【待核查推文】\n${text}\n\n` +
+      `【网络搜索资料】（共 ${lines.length} 条，供参考，请自行甄别可信度与相关性）\n` +
+      lines.join("\n\n");
+  }
+
   const body = {
     model: settings.model,
     messages: [
       { role: "system", content: XR_SYSTEM_PROMPT },
-      { role: "user", content: text },
+      { role: "user", content: userContent },
     ],
     temperature: 0.2,
   };
@@ -289,7 +407,9 @@ async function callLLM(text, settings, opts = {}) {
   return content;
 }
 
-const XR_VERDICTS = new Set(["rumor", "suspected", "credible", "unknown"]);
+const XR_VERDICTS = new Set(["rumor", "not_rumor", "suspected"]);
+// 旧版本输出兼容
+const XR_VERDICT_MAP = { credible: "not_rumor", unknown: "suspected" };
 
 function parseVerdict(content) {
   let raw = String(content).trim();
@@ -311,22 +431,26 @@ function parseVerdict(content) {
     throw makeError("AI 返回 JSON 解析失败", "PARSE_ERROR");
   }
 
-  const verdict = XR_VERDICTS.has(obj.verdict) ? obj.verdict : "unknown";
-
-  let confidence = Number(obj.confidence);
-  if (!Number.isFinite(confidence)) confidence = 50;
-  confidence = Math.round(Math.min(100, Math.max(0, confidence)));
+  const verdict = XR_VERDICTS.has(obj.verdict)
+    ? obj.verdict
+    : XR_VERDICT_MAP[obj.verdict] || "suspected";
 
   const reasons = Array.isArray(obj.reasons)
-    ? obj.reasons.map((x) => String(x)).filter(Boolean).slice(0, 6)
+    ? obj.reasons.map((x) => String(x).trim().slice(0, 60)).filter(Boolean).slice(0, 3)
+    : [];
+
+  const sources = Array.isArray(obj.sources)
+    ? obj.sources
+        .map((x) => hostOf(String(x)) || String(x).trim().slice(0, 60))
+        .filter(Boolean)
+        .slice(0, 3)
     : [];
 
   return {
     verdict,
-    confidence,
-    summary: String(obj.summary || "").slice(0, 200),
+    summary: String(obj.summary || "").slice(0, 80),
     reasons,
-    advice: String(obj.advice || "").slice(0, 200),
+    sources,
   };
 }
 
