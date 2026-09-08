@@ -1,4 +1,5 @@
 // X-Really 后台服务：接收检查请求，调用 OpenAI 兼容接口完成谣言分析
+// v0.2: 新增模型列表拉取（/models）与多模态能力实测
 
 const XR_DEFAULTS = {
   baseUrl: "https://api.openai.com/v1",
@@ -9,6 +10,10 @@ const XR_DEFAULTS = {
 const XR_MAX_TEXT_LEN = 4000;
 const XR_HISTORY_KEY = "xrHistory";
 const XR_HISTORY_MAX = 20;
+
+// 1x1 测试图片，用于多模态能力实测
+const XR_TEST_IMAGE =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 const XR_SYSTEM_PROMPT = `你是一位专业的社交媒体内容事实核查员，任务是判断用户提供的推文内容是否包含谣言或虚假信息。
 
@@ -47,6 +52,34 @@ async function getSettings() {
   return { ...XR_DEFAULTS, ...(await chrome.storage.sync.get(XR_DEFAULTS)) };
 }
 
+function apiUrl(settings, path) {
+  return settings.baseUrl.replace(/\/+$/, "") + path;
+}
+
+function authHeaders(settings, extra = {}) {
+  const h = { "Content-Type": "application/json", ...extra };
+  if (settings.apiKey) h.Authorization = "Bearer " + settings.apiKey;
+  return h;
+}
+
+async function readErrorDetail(res) {
+  try {
+    const j = await res.json();
+    return j?.error?.message || (typeof j?.error === "string" ? j.error : "") || j?.message || "";
+  } catch {
+    return "";
+  }
+}
+
+/** 校验接口配置是否足以发起请求（本地服务如 Ollama 允许无 Key） */
+async function requireEndpoint(settings) {
+  if (!settings.baseUrl) throw makeError("请先配置接口地址", "NO_BASE_URL");
+  const isLocal = /localhost|127\.0\.0\.1/.test(settings.baseUrl);
+  if (!settings.apiKey && !isLocal) {
+    throw makeError("请先填写并保存 API Key", "NO_API_KEY");
+  }
+}
+
 // ---------- 消息路由 ----------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -63,6 +96,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case "TEST_CONNECTION":
       testConnection()
+        .then((info) => sendResponse({ ok: true, info }))
+        .catch((err) =>
+          sendResponse({ ok: false, error: err?.message || String(err), code: err?.code || "" })
+        );
+      return true;
+
+    case "LIST_MODELS":
+      listModels()
+        .then((info) => sendResponse({ ok: true, info }))
+        .catch((err) =>
+          sendResponse({ ok: false, error: err?.message || String(err), code: err?.code || "" })
+        );
+      return true;
+
+    case "TEST_VISION":
+      testVision()
         .then((info) => sendResponse({ ok: true, info }))
         .catch((err) =>
           sendResponse({ ok: false, error: err?.message || String(err), code: err?.code || "" })
@@ -94,14 +143,111 @@ async function checkText(rawText) {
 
 async function testConnection() {
   const settings = await getSettings();
-  if (!settings.apiKey) throw makeError("请先填写并保存 API Key", "NO_API_KEY");
+  await requireEndpoint(settings);
   const t0 = Date.now();
   await callLLM("请只回复两个字符：OK", settings, { maxTokens: 16 });
   return { latencyMs: Date.now() - t0, model: settings.model };
 }
 
+/** 拉取模型列表：GET {baseUrl}/models，兼容 OpenAI / Ollama / 硅基流动等返回结构 */
+async function listModels() {
+  const settings = await getSettings();
+  await requireEndpoint(settings);
+
+  let res;
+  try {
+    res = await fetch(apiUrl(settings, "/models"), {
+      method: "GET",
+      headers: authHeaders(settings),
+    });
+  } catch {
+    throw makeError("网络请求失败，请检查接口地址与网络连接", "NETWORK_ERROR");
+  }
+
+  if (!res.ok) {
+    const detail = await readErrorDetail(res);
+    throw makeError(
+      `拉取失败 (HTTP ${res.status})${detail ? "：" + detail : ""}。该服务可能不支持 /models 接口，可手动输入模型名。`,
+      "API_ERROR"
+    );
+  }
+
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw makeError("接口返回的不是有效 JSON", "API_ERROR");
+  }
+
+  let models = [];
+  if (Array.isArray(data?.data)) {
+    // OpenAI 格式：{ data: [{ id }] }
+    models = data.data.map((m) => m?.id).filter((x) => typeof x === "string");
+  } else if (Array.isArray(data?.models)) {
+    // Ollama 原生格式等：{ models: [{ name }] }
+    models = data.models.map((m) => (typeof m === "string" ? m : m?.name || m?.model));
+  } else if (Array.isArray(data)) {
+    models = data.map((m) => (typeof m === "string" ? m : m?.id || m?.name));
+  }
+  models = [...new Set(models.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+
+  if (!models.length) {
+    throw makeError("接口返回的模型列表为空，可手动输入模型名", "API_ERROR");
+  }
+  return { models };
+}
+
+/**
+ * 多模态能力实测：向模型发送 1x1 测试图片，根据响应判断是否支持图片输入
+ * @returns {{vision:"yes"|"no"|"unknown", note:string}}
+ */
+async function testVision() {
+  const settings = await getSettings();
+  await requireEndpoint(settings);
+  if (!settings.model) throw makeError("请先填写模型名称", "NO_MODEL");
+
+  const body = {
+    model: settings.model,
+    messages: [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "What is in this image? Reply with one word." },
+          { type: "image_url", image_url: { url: XR_TEST_IMAGE } },
+        ],
+      },
+    ],
+    max_tokens: 16,
+  };
+
+  let res;
+  try {
+    res = await fetch(apiUrl(settings, "/chat/completions"), {
+      method: "POST",
+      headers: authHeaders(settings),
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw makeError("网络请求失败，请检查接口地址与网络连接", "NETWORK_ERROR");
+  }
+
+  if (res.ok) {
+    return { vision: "yes", note: "实测通过：模型可接收图片输入" };
+  }
+
+  const detail = await readErrorDetail(res);
+  const notSupport =
+    /image|vision|multimodal|图片|多模态|视觉|unsupported|not support|invalid.*type/i.test(detail);
+  if ([400, 404, 415, 422].includes(res.status) && notSupport) {
+    return { vision: "no", note: "实测确认：该模型不支持图片输入" };
+  }
+  return {
+    vision: "unknown",
+    note: `无法确认 (HTTP ${res.status})${detail ? "：" + detail.slice(0, 120) : ""}`,
+  };
+}
+
 async function callLLM(text, settings, opts = {}) {
-  const url = settings.baseUrl.replace(/\/+$/, "") + "/chat/completions";
   const body = {
     model: settings.model,
     messages: [
@@ -114,26 +260,17 @@ async function callLLM(text, settings, opts = {}) {
 
   let res;
   try {
-    res = await fetch(url, {
+    res = await fetch(apiUrl(settings, "/chat/completions"), {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: "Bearer " + settings.apiKey,
-      },
+      headers: authHeaders(settings),
       body: JSON.stringify(body),
     });
-  } catch (e) {
+  } catch {
     throw makeError("网络请求失败，请检查接口地址与网络连接", "NETWORK_ERROR");
   }
 
   if (!res.ok) {
-    let detail = "";
-    try {
-      const j = await res.json();
-      detail = j?.error?.message || (typeof j?.error === "string" ? j.error : "") || "";
-    } catch {
-      /* 忽略解析失败 */
-    }
+    const detail = await readErrorDetail(res);
     throw makeError(
       `接口请求失败 (HTTP ${res.status})${detail ? "：" + detail : ""}`,
       "API_ERROR"

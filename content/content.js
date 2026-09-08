@@ -1,8 +1,15 @@
-// X-Really content script：在每条推文下方注入「检查谣言」按钮与结果卡片
+// X-Really content script：在推文操作栏末尾注入「检查谣言」按钮，结果卡片渲染在推文正文下方
 // 依赖：shared/ui.js（XR_VERDICT_META / xrBuildCard 已注入）
+// v0.2: 按钮从正文下方迁移至操作栏（回复/转发/点赞一排的末尾），样式贴合 X 原生操作按钮
 
 (() => {
   "use strict";
+
+  // 操作栏图标：盾牌 + 对勾（与扩展品牌一致）
+  const ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/>
+    <path d="M9 12l2 2 4-4"/>
+  </svg>`;
 
   // ---------- 工具 ----------
 
@@ -12,6 +19,22 @@
       h = ((h << 5) + h + text.charCodeAt(i)) | 0;
     }
     return (h >>> 0).toString(36) + "-" + text.length;
+  }
+
+  /** 确保推文正文之后存在与当前文本哈希匹配的卡片容器，返回容器或 null */
+  function ensureCardRoot(article, textEl, hash) {
+    let root = article.querySelector(":scope .xr-root");
+    if (root && root.dataset.xrHash !== hash) {
+      root.remove();
+      root = null;
+    }
+    if (!root) {
+      root = document.createElement("div");
+      root.className = "xr-root";
+      root.dataset.xrHash = hash;
+      textEl.insertAdjacentElement("afterend", root);
+    }
+    return root;
   }
 
   // ---------- 推文扫描 ----------
@@ -35,76 +58,82 @@
     if (!text) return;
 
     const hash = hashText(text);
-    const root = article.querySelector(".xr-root");
 
-    // 已处理且推文内容未变化 → 跳过（应对虚拟化 DOM 复用）
-    if (root && root.dataset.xrHash === hash && root.isConnected) return;
+    // 1) 结果卡片容器：保持在推文正文之后，按哈希防串台
+    ensureCardRoot(article, textEl, hash);
 
-    if (root) root.remove();
-    textEl.insertAdjacentElement("afterend", buildRoot(text, hash));
-  }
+    // 2) 操作栏按钮：附加在 div[role="group"]（回复/转发/点赞一排）末尾
+    const group = article.querySelector('div[role="group"]');
+    if (!group || !group.isConnected) return;
 
-  // ---------- UI 构建 ----------
-
-  function buildRoot(text, hash) {
-    const root = document.createElement("div");
-    root.className = "xr-root";
-    root.dataset.xrHash = hash;
+    const existing = group.querySelector(":scope > .xr-act");
+    if (existing && existing.dataset.xrHash === hash) return; // 已就位且文本未变
+    if (existing) existing.remove(); // 文本已变化（虚拟化复用），重建以重置状态
 
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "xr-btn";
-    btn.innerHTML = `
-      <svg viewBox="0 0 24 24" width="14" height="14" fill="none"
-           stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"/>
-        <path d="M9 12l2 2 4-4"/>
-      </svg>
-      <span>检查谣言</span>`;
-    btn.addEventListener("click", () => runCheck(btn, root, text));
-
-    root.appendChild(btn);
-    return root;
+    btn.className = "xr-act";
+    btn.dataset.xrHash = hash;
+    btn.setAttribute("aria-label", "检查谣言");
+    btn.title = "检查谣言 · X-Really";
+    btn.innerHTML = ICON_SVG;
+    btn.addEventListener("click", onTriggerClick);
+    group.appendChild(btn);
   }
 
-  async function runCheck(btn, root, text) {
-    if (btn.disabled) return;
-    setLoading(btn, true);
+  // ---------- 检查流程 ----------
+
+  async function onTriggerClick(e) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const btn = e.currentTarget;
+    if (btn.classList.contains("xr-loading")) return;
+
+    const article = btn.closest("article[data-testid='tweet']");
+    const textEl = article && article.querySelector('[data-testid="tweetText"]');
+    const text = textEl ? textEl.innerText.trim() : "";
+    if (!text || !article) return;
+
+    // 卡片容器以点击时刻的文本为准，避免闭包中的旧文本
+    const root = ensureCardRoot(article, textEl, hashText(text));
+
+    // 加载态：图标替换为旋转指示器
+    btn.classList.add("xr-loading");
+    btn.classList.remove("xr-v-rumor", "xr-v-suspected", "xr-v-credible", "xr-v-unknown");
+    btn.innerHTML = '<span class="xr-spin"></span>';
 
     let resp;
     try {
       resp = await chrome.runtime.sendMessage({ type: "CHECK_TEXT", text });
     } catch {
-      resp = { ok: false, error: "扩展通信失败，请刷新页面后重试" };
+      resp = { ok: false, error: "扩展通信失败，请刷新页面重试" };
     }
-    setLoading(btn, false);
 
+    // 恢复图标 + 按判定结果着色（悬停 title 同步展示结论）
+    btn.classList.remove("xr-loading");
+    btn.innerHTML = ICON_SVG;
+    if (resp && resp.ok) {
+      const meta = XR_VERDICT_META[resp.result.verdict] || XR_VERDICT_META.unknown;
+      btn.classList.add(meta.cls);
+      btn.title = `X-Really：${meta.icon} ${meta.label} · 置信度 ${resp.result.confidence}%`;
+    } else {
+      btn.title = "检查失败：" + ((resp && resp.error) || "未知错误");
+    }
+
+    // 渲染结果卡片到推文正文下方
     const oldCard = root.querySelector(":scope > .xr-card");
     if (oldCard) oldCard.remove();
     root.appendChild(xrBuildCard(resp));
   }
 
-  function setLoading(btn, on) {
-    if (on) {
-      btn.dataset.orig = btn.innerHTML;
-      btn.disabled = true;
-      btn.classList.add("xr-loading");
-      btn.innerHTML = `<span class="xr-spin"></span><span>AI 分析中…</span>`;
-    } else {
-      btn.disabled = false;
-      btn.classList.remove("xr-loading");
-      if (btn.dataset.orig) btn.innerHTML = btn.dataset.orig;
-    }
-  }
-
-  // ---------- 启动与监听 ----------
+  // ---------- 启动 ----------
 
   let timer = null;
   const observer = new MutationObserver(() => {
     if (timer) clearTimeout(timer);
     timer = setTimeout(scan, 300);
   });
-
   observer.observe(document.body, { childList: true, subtree: true });
   scan();
 })();

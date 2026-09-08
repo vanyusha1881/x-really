@@ -6,11 +6,13 @@
 
 ## ✨ 功能特性
 
-- 🛡 **在推文旁一键检查**：每条推文下方自动出现「检查谣言」按钮，点击即可分析
+- 🛡 **操作栏一键检查**：每条推文操作栏（回复/转发/点赞一排）末尾自动出现检查按钮，点击即分析，完成后按钮按判定结果着色
 - 📋 **手动文本检查**：点击工具栏图标，粘贴任意文本也能分析
 - 🎯 **四档判定 + 置信度**：谣言 / 存疑 / 未见谣言特征 / 无法判断，并给出 0–100 置信度
 - 💡 **理由 + 建议**：除结论外，列出 2–4 条依据与一条可操作建议
-- 🧠 **兼容任意 OpenAI 协议**：默认 OpenAI，也支持 DeepSeek、Moonshot(Kimi)、通义千问等
+- 🧠 **兼容任意 OpenAI 协议**：内置 DeepSeek / 智谱 GLM / Moonshot(Kimi) / 通义千问 / 硅基流动 / OpenRouter / Ollama 等预设
+- 📥 **模型列表拉取**：一键从 `/models` 接口拉取可用模型，带搜索下拉与 24h 本地缓存（参考 cc-switch）
+- 👁 **多模态能力检测**：静态命名识别 + 1×1 图片实测双重判断模型是否支持图片输入，结果按模型缓存
 - 🕘 **最近 20 条历史**：自动保存，Popup 内可回看
 - 🌗 **明暗双主题兼容**：注入卡片为深色面板，适配 X 的暗/亮主题
 - 🔒 **本地优先**：API Key 仅存于浏览器 `chrome.storage.sync`，不上传任何第三方
@@ -30,22 +32,32 @@
 
 ## ⚙️ 配置 API
 
-点击工具栏图标 → 右上角齿轮按钮，进入设置页，填写：
+点击工具栏图标 → 右上角齿轮按钮，进入设置页。
 
-| 字段 | 示例 | 说明 |
+### 1. 选择服务商预设
+
+设置页顶部提供预设卡片，**点击即自动填充**接口地址与推荐模型：
+
+| 预设 | Base URL | 推荐模型 |
 | --- | --- | --- |
-| **接口地址 (Base URL)** | `https://api.openai.com/v1` | OpenAI 兼容协议的入口 |
-| **API Key** | `sk-...` | 你的服务商密钥 |
-| **模型名称** | `gpt-4o-mini` | 支持该服务商下任意 chat 模型 |
-
-**国内常用服务**（同样兼容 OpenAI 协议）：
-
-| 服务 | Base URL | 模型示例 |
-| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| Moonshot(Kimi) | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
-| 阿里通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-turbo` |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4.5-flash` |
+| Moonshot · Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-turbo` |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `openai/gpt-4o-mini` |
+| Ollama 本地 | `http://localhost:11434/v1` | 本机已拉取的模型（无需 Key） |
+| 自定义 | 任意 OpenAI 兼容地址 | 手动填写 |
+
+每个预设卡片附带「获取 API Key」直达链接；切换预设不会清除已填写的 Key。
+
+### 2. 填写 API Key 并选择模型
+
+- **模型拉取**：点击「拉取模型列表」，通过 OpenAI 兼容 `/models` 接口获取该服务商全部可用模型，支持搜索过滤；结果缓存 24 小时。拉取失败（部分服务商不支持该接口）时可直接输入，或点击「常用模型」快捷填充。
+- **多模态能力检测**：模型名变化时即时显示静态识别结果（✅ 支持多模态 / 🚫 不支持图片 / ❓ 未知）；点击「实测检测」会发送一张 1×1 测试图片做真实验证，结果按模型缓存。
+
+### 3. 测试连接
 
 填写后点击「**测试连接**」，看到 ✅ 表示配置成功。
 
@@ -53,18 +65,19 @@
 
 ### 方式一：在 X 上检查推文
 
-打开 [x.com](https://x.com)，每条推文下方会出现「🛡 检查谣言」按钮：
+打开 [x.com](https://x.com)，每条推文操作栏（回复/转发/点赞一排）末尾会出现 🛡 检查按钮：
 
-1. 点击按钮 → 出现「AI 分析中…」加载态
-2. 几秒后，弹出深色结果卡片：
+1. 点击按钮 → 图标变为旋转加载态
+2. 几秒后，推文正文下方弹出深色结果卡片：
    - **判定标签**（含 emoji 与颜色：🚫 谣言 / ⚠️ 存疑 / ✅ 未见谣言特征 / ❔ 无法判断）
    - **置信度**
    - **一句话结论**
    - **理由列表**（2–4 条）
    - **💡 给读者的建议**
-3. 点击卡片右上角 `×` 可关闭
+3. 检查完成后，操作栏按钮会**按判定结果着色**，悬停可查看结论摘要
+4. 点击卡片右上角 `×` 可关闭
 
-> 推文文本变化（点赞、转发后重排）会自动重置结果。
+> 推文文本变化（点赞、转发后重排）会自动重置按钮与结果。
 
 ### 方式二：手动检查任意文本
 
@@ -129,24 +142,25 @@ x-really/
 ├── tools/
 │   └── generate_icons.py      # 图标生成脚本（无第三方依赖）
 ├── background/
-│   └── service-worker.js      # 后台：AI 调用 / 解析 / 历史
+│   └── service-worker.js      # 后台：AI 调用 / 解析 / 历史 / 模型列表 / 能力实测
 ├── content/
-│   ├── content.js             # 推文旁按钮与结果卡片
+│   ├── content.js             # 操作栏按钮与结果卡片
 │   └── content.css
 ├── popup/
 │   ├── popup.html / css / js  # 工具栏弹出页
 ├── options/
-│   └── options.html / css / js # 设置页
+│   └── options.html / css / js # 设置页（预设 / 模型拉取 / 能力检测）
 └── shared/
     ├── common.css             # 通用深色主题样式
+    ├── providers.js           # 服务商预设 + 多模态静态识别
     └── ui.js                  # 判定元数据 + 结果卡片构建
 ```
 
 ## 🗓 后续规划
 
+- [ ] 多模态：结合推文配图一起分析（已具备能力检测基础）
 - [ ] 多语言：英文 / 繁体（按浏览器语言自动切换）
 - [ ] 推文级缓存：相同文本 30 分钟内复用历史结果
-- [ ] 一键展开查看引用推文/链接
 - [ ] 汇总面板：个人时间线可信度分布
 - [ ] 打包发布到 Chrome Web Store
 

@@ -1,68 +1,107 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
+<html lang="zh-CN" data-page-node-id="3Pcw6vKAhP3b391kB2lzlE">
+<head data-page-node-id="r8oLtFRFBmV2gvKAJAMtEX">
+  <meta charset="UTF-8" data-page-node-id="KyBrtm2LKt9CJVahElYxbv" />
   <title>X-Really 设置</title>
-  <link rel="stylesheet" href="../shared/common.css" />
-  <link rel="stylesheet" href="options.css" />
+  <link rel="stylesheet" href="../shared/common.css" data-page-node-id="TI5AfaiEhVdR6OtEKTI9D7" />
+  <link rel="stylesheet" href="options.css" data-page-node-id="y87PfavKMKWUajPCLHUbCn" />
 </head>
-<body>
-<main class="wrap">
-  <header class="page-head">
-    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <defs>
-        <linearGradient id="xr-g" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0" stop-color="#6366f1" />
-          <stop offset="1" stop-color="#a855f7" />
+<body data-page-node-id="HHzql88lLC0jxVH1OZdoW1">
+<main class="wrap" data-page-node-id="sBFtbu4AmxMxXELsDc56f8">
+  <header class="page-head" data-page-node-id="tZMdIFBFeEucbEOMWmEAAO">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true" data-page-node-id="yWVwceto9fLJaOmOoozAUK">
+      <defs data-page-node-id="ubCYWSaKB53yB6ZA7YvFav">
+        <linearGradient id="xr-g" x1="0" y1="0" x2="1" y2="1" data-page-node-id="Lmy8lERfjxwJNdSC1TD7Pd">
+          <stop offset="0" stop-color="#6366f1" data-page-node-id="qcBFWOFAOf8MOCMEMWywdj" />
+          <stop offset="1" stop-color="#a855f7" data-page-node-id="RRm94noF9DB0b7dB1jVfus" />
         </linearGradient>
       </defs>
-      <path d="M12 2.5l7.5 3.2v5.3c0 4.8-3.2 8.6-7.5 10.5-4.3-1.9-7.5-5.7-7.5-10.5V5.7z" fill="url(#xr-g)" />
-      <path d="M8.8 12.2l2.2 2.2 4.2-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+      <path d="M12 2.5l7.5 3.2v5.3c0 4.8-3.2 8.6-7.5 10.5-4.3-1.9-7.5-5.7-7.5-10.5V5.7z" fill="url(#xr-g)" data-page-node-id="8G1BtL2SVzKHOTFcYLcWFU" />
+      <path d="M8.8 12.2l2.2 2.2 4.2-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="zPc0UNFvxvecvwQXnikKBA" />
     </svg>
-    <div>
-      <h1>X-Really 设置</h1>
-      <p>配置用于谣言分析的 AI 接口（OpenAI 兼容协议）</p>
+    <div data-page-node-id="i8hU8DjMJ1dWK5hNjG6cux">
+      <h1 data-page-node-id="JBTGd8JOIMJZKGGoCD6slI">X-Really 设置</h1>
+      <p data-page-node-id="hKIf6NRRvyiJ04ORqROeWU">选择服务商预设，配置用于谣言分析的 AI 接口（OpenAI 兼容协议）</p>
     </div>
   </header>
 
-  <section class="panel">
-    <label class="field">
-      <span class="field-label">接口地址（Base URL）</span>
-      <input id="optBaseUrl" type="text" placeholder="https://api.openai.com/v1" spellcheck="false" />
-      <span class="hint">
-        兼容 OpenAI 协议的服务均可使用，例如：<br />
-        DeepSeek：https://api.deepseek.com/v1 &nbsp;·&nbsp; Moonshot：https://api.moonshot.cn/v1
-      </span>
-    </label>
-
-    <label class="field">
-      <span class="field-label">API Key</span>
-      <input id="optApiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
-      <span class="hint">仅保存在你的浏览器（chrome.storage.sync），不会上传到任何第三方服务器</span>
-    </label>
-
-    <label class="field">
-      <span class="field-label">模型名称</span>
-      <input id="optModel" type="text" placeholder="gpt-4o-mini" spellcheck="false" />
-    </label>
-
-    <div class="actions">
-      <button id="saveBtn" class="primary-btn">保存设置</button>
-      <button id="testBtn" class="ghost-btn">测试连接</button>
-    </div>
-    <div id="testResult" class="test-result"></div>
+  <!-- 服务商预设 -->
+  <section class="panel" data-page-node-id="J0nIKzKkKjp4LcJzzArcuq">
+    <h2 class="sec-title" data-page-node-id="1PdawVSBWZsHXeLXI95RMb">服务商预设</h2>
+    <p class="sec-desc" data-page-node-id="HzV02OaR4BVSVNdbaOHVdr">点击卡片自动填充接口地址与推荐模型；切换预设不会清除已填写的 API Key。</p>
+    <div id="presetGrid" class="preset-grid" data-page-node-id="DPepZVmhqTU5umkkctuD7e"></div>
   </section>
 
-  <section class="panel tip">
-    <h2>使用提示</h2>
-    <ul>
-      <li>打开 <b>x.com</b>，每条推文下方会出现「检查谣言」按钮，点击即可分析。</li>
-      <li>也可以点击浏览器工具栏中的扩展图标，直接粘贴文本进行检查。</li>
-      <li>AI 判定仅供参考，请勿作为事实认定的唯一依据。</li>
+  <!-- 接口配置 -->
+  <section class="panel" data-page-node-id="5SpNS9d2KkTBNVFVRWmRn9">
+    <h2 class="sec-title" data-page-node-id="OK0Ly62Sa7Tif3gm95MJfq">接口配置</h2>
+
+    <div class="field" data-page-node-id="l51hrC2ZPFJCdvtVVSk7Kj">
+      <span class="field-label" data-page-node-id="ZyHGiOTb0pCzLIr7SiwqBr">接口地址（Base URL）</span>
+      <div class="input-row" data-page-node-id="1PWkAumkh9haww9fmjhpbZ">
+        <input id="optBaseUrl" type="text" placeholder="https://api.openai.com/v1" spellcheck="false" data-page-node-id="B2De1rc4NmryiTKu3DvfqO" />
+        <a id="keyLink" class="mini-link" target="_blank" rel="noopener noreferrer" data-page-node-id="4CuROq42QI4WvAA2oy691X">获取 API Key ↗</a>
+      </div>
+    </div>
+
+    <div class="field" data-page-node-id="EqyBB4GWiYDONCKTLhNXMq">
+      <span class="field-label" data-page-node-id="rXa6b6vIzdPDYY3UBt4KT6">API Key</span>
+      <div class="input-row" data-page-node-id="9IyUEJQmOzldhGmIP9waNT">
+        <input id="optApiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" data-page-node-id="pOceGRejGaIyiSBkeTsp3H" />
+        <button id="toggleKey" type="button" class="ghost-btn small" data-page-node-id="4HnVB4yFv0ZizRs8uADeCg">显示</button>
+      </div>
+      <p class="hint" data-page-node-id="rYerVgXPE6wSGDlH3eLQ0X">仅保存在你的浏览器（chrome.storage.sync），不会上传到任何第三方服务器</p>
+    </div>
+
+    <div class="field" data-page-node-id="zxHiOBLmsjAkhSmAr6P1ui">
+      <span class="field-label" data-page-node-id="ykzMfuOIfLmZpM9ohG1hhT">模型</span>
+      <div class="input-row" data-page-node-id="1wr4ifsw2QJtitJiUlgfpQ">
+        <div class="model-box" data-page-node-id="HyC1qJdeR61u56dn1jMz51">
+          <input id="optModel" type="text" placeholder="点击选择，或直接输入模型名称" autocomplete="off" spellcheck="false" data-page-node-id="bAMbInZQCMzLfRvOWBIg1B" />
+          <div id="modelDrop" class="model-drop hidden" data-page-node-id="HT9bXBoMp2LHAYrXfva7VO">
+            <div class="drop-search" data-page-node-id="dXr1EFl1NWe8gvEG4q1DsS">
+              <input id="modelSearch" type="text" placeholder="搜索模型…" spellcheck="false" data-page-node-id="XCDCkDItHznjVDl300n4dH" />
+            </div>
+            <ul id="modelList" data-page-node-id="bk6blV7kCUWqrp9VtCXEzk"></ul>
+          </div>
+        </div>
+        <button id="fetchModels" type="button" class="ghost-btn" data-page-node-id="XXPUlW49JYXFZCnUWG8gDf">拉取模型列表</button>
+      </div>
+      <div id="modelChips" class="chips" data-page-node-id="XBdRktdApa0Ou6Ncg2T7vY"></div>
+      <p class="hint" id="fetchHint" data-page-node-id="Ngr36JStMdPBn9L4dLOwhg">「拉取模型列表」通过 OpenAI 兼容 /models 接口获取可用模型；拉取失败时可直接输入，或点击上方常用模型。</p>
+    </div>
+
+    <div class="field" data-page-node-id="OAFt2kwsnzvzWE5WjL67lm">
+      <span class="field-label" data-page-node-id="QcDigtAQJMxJCnk8WJENaQ">模型能力 · 多模态（图片理解）</span>
+      <div class="cap-row" data-page-node-id="8kRurEu3oOfNCiOFplhY8w">
+        <span id="capBadge" class="cap-badge unknown" data-page-node-id="YwZ1Zv7xQLVvRlclXQFWDU">❓ 未知</span>
+        <button id="testVision" type="button" class="ghost-btn small" data-page-node-id="0rchnGrgOO37eBe9LY5VI1">实测检测</button>
+        <span id="capNote" class="cap-note" data-page-node-id="Mndtbjs9ENNAYzGK1EhTZ0"></span>
+      </div>
+      <p class="hint" data-page-node-id="f6dkMI0keeCz6Khi72P6Bt">静态识别基于模型命名特征即时显示；「实测检测」会向接口发送一张 1×1 测试图片做真实验证，结果会按模型缓存。</p>
+    </div>
+
+    <div class="actions" data-page-node-id="wNwSsrWylQlPPavofkIpZk">
+      <button id="saveBtn" class="primary-btn" data-page-node-id="qP2H0yjA9Mrsq1MVEvUREn">保存设置</button>
+      <button id="testBtn" class="ghost-btn" data-page-node-id="sWD2AvKreKGtr4xuE70pZq">测试连接</button>
+      <span id="dirtyHint" class="dirty-hint hidden" data-page-node-id="QeF55nsuwxd4gMtHoDDViW">● 有未保存的更改</span>
+    </div>
+    <div id="testResult" class="test-result" data-page-node-id="60WZo6UzXb2UhCOaITfFKD"></div>
+  </section>
+
+  <section class="panel tip" data-page-node-id="8sVHZ0Scc8OaPyCpSaX1N2">
+    <h2 data-page-node-id="UOq0RH8N1igXXrhlfYKOLI">使用提示</h2>
+    <ul data-page-node-id="mpoCDFTuUagpFihg8vhkIV">
+      <li data-page-node-id="zJTWizgshqKBJfflDkrMW2">打开 <b data-page-node-id="NDvdlS2BHbnvlOblUHwjoK">x.com</b>，每条推文操作栏（回复/转发/点赞一排）的末尾会出现「检查谣言」按钮。</li>
+      <li data-page-node-id="fbPy0YCD99RTk4kKOdH1E1">也可以点击浏览器工具栏中的扩展图标，直接粘贴文本进行检查。</li>
+      <li data-page-node-id="nBjJg9mtLjUlgiVrEHnaPu">Ollama 等本地服务无需 API Key，接口地址填 <code data-page-node-id="UXSGOjCv3OxWBqjL2WfqKx">http://localhost:11434/v1</code>。</li>
+      <li data-page-node-id="7cn64EuuuFeJutACgb7CFj">AI 判定仅供参考，请勿作为事实认定的唯一依据。</li>
     </ul>
   </section>
 </main>
 
+<script src="../shared/ui.js"></script>
+<script src="../shared/providers.js"></script>
 <script src="options.js"></script>
 </body>
 </html>
