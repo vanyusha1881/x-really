@@ -58,7 +58,9 @@ function xrBuildCard(resp) {
       ${r.summary ? `<div class="xr-summary">${xrEscapeHtml(r.summary)}</div>` : ""}
       ${reasons ? `<ul class="xr-reasons">${reasons}</ul>` : ""}
       ${sources.length ? `<div class="xr-src">🔍 来源：${sources.map(xrEscapeHtml).join(" · ")}</div>` : ""}
+      ${r.imageCount ? `<div class="xr-src">🖼 已结合 ${r.imageCount} 张配图分析</div>` : ""}
       ${r.searched === false ? `<div class="xr-foot">联网检索不可用，本次基于 AI 知识判断</div>` : ""}
+      ${r.skippedImages ? `<div class="xr-foot">配图未分析：当前模型不支持图片输入</div>` : ""}
     `;
   }
 

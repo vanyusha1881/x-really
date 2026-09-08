@@ -325,12 +325,99 @@ async function loadSettings() {
   updateCapBadge();
 }
 
+/**
+ * 绑定校验：推文多为图文，模型必须支持多模态（图片理解）才允许保存。
+ * 静态识别 + 实测（走 TEST_VISION overrides，不需先保存配置）。
+ * @returns {{ok:boolean, warn?:string, reason?:string}}
+ */
+async function ensureVisionCapable(s) {
+  const staticV = xrDetectVisionStatic(s.model);
+  if (staticV === "no") {
+    return {
+      ok: false,
+      reason: `模型 ${s.model} 不支持多模态。图文推文需要读图能力，请更换支持图片理解的模型（如 gpt-4o、glm-4v-flash、qwen-vl-plus），或点击「实测检测」验证后再保存`,
+    };
+  }
+
+  // 已有实测缓存：yes 直接放行，no 直接拦截
+  const stored = await chrome.storage.local.get(XR_CAPS_CACHE_KEY);
+  const cached = (stored[XR_CAPS_CACHE_KEY] || {})[s.model];
+  if (cached) {
+    if (cached.vision === "yes") return { ok: true };
+    if (cached.vision === "no") {
+      return {
+        ok: false,
+        reason: `实测确认模型 ${s.model} 不支持图片输入，无法绑定。请更换支持多模态的模型`,
+      };
+    }
+  }
+
+  // 无实测缓存：绑定前自动实测一次（无需先保存）
+  let resp;
+  try {
+    resp = await chrome.runtime.sendMessage({
+      type: "TEST_VISION",
+      overrides: { baseUrl: s.baseUrl, apiKey: s.apiKey, model: s.model },
+    });
+  } catch {
+    resp = { ok: false, error: "扩展通信失败" };
+  }
+
+  if (resp && resp.ok) {
+    const { vision, note: n } = resp.info;
+    if (vision === "yes") return { ok: true };
+    if (vision === "no") {
+      return {
+        ok: false,
+        reason: `实测确认模型 ${s.model} 不支持图片输入，无法绑定。请更换支持多模态的模型`,
+      };
+    }
+    // unknown：无法确认（多为网络/鉴权问题），不拦截但提示
+    return {
+      ok: true,
+      warn: `⚠️ 已保存，但未能确认多模态能力${n ? "（" + n + "）" : ""}。建议点击「实测检测」复核`,
+    };
+  }
+
+  // 实测请求本身失败（如未填 Key）：不拦截保存，提示稍后验证
+  return {
+    ok: true,
+    warn: "⚠️ 已保存。绑定前未能完成多模态实测（" + ((resp && resp.error) || "未知错误") + "），请点击「实测检测」验证",
+  };
+}
+
 async function save() {
   const s = collectSettings();
+  const btn = $("saveBtn");
+  const idle = "保存设置";
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="xr-spin"></span> 检测模型中…';
+  setTestResult("⏳ 正在校验模型多模态能力…", "info");
+
+  let check;
+  try {
+    check = await ensureVisionCapable(s);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = idle;
+  }
+
+  if (!check.ok) {
+    setTestResult("🚫 绑定失败：" + check.reason, "err");
+    return;
+  }
+
   await chrome.storage.sync.set({ ...s, provider: currentProviderId });
   $("dirtyHint").classList.add("hidden");
-  showToast("✅ 已保存");
   updateCapBadge();
+  if (check.warn) {
+    setTestResult(check.warn, "info");
+    showToast("✅ 已保存（多模态待确认）");
+  } else {
+    setTestResult("✅ 保存成功，模型已通过多模态校验", "ok");
+    showToast("✅ 已保存");
+  }
 }
 
 async function testConnection() {

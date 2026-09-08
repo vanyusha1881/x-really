@@ -1,6 +1,6 @@
 // X-Really 后台服务：接收检查请求，联网检索资料 + 调用 OpenAI 兼容接口完成谣言核查
-// v0.3: 明确三档判定（谣言/不是谣言/存疑）、联网搜索（Bing→DuckDuckGo 兜底）、
-//       移除置信度/建议，结果附引用来源
+// v0.4: 支持推文配图多模态分析（下载转 base64），testVision 支持未保存配置实测，
+//       图片请求报错时自动降级为纯文字分析
 
 const XR_DEFAULTS = {
   baseUrl: "https://api.openai.com/v1",
@@ -11,9 +11,13 @@ const XR_DEFAULTS = {
 
 const XR_MAX_TEXT_LEN = 4000;
 const XR_HISTORY_KEY = "xrHistory";
+const XR_CAPS_KEY = "xrCaps"; // { [model]: { vision, note, ts } } 多模态实测缓存
 const XR_HISTORY_MAX = 20;
 const XR_SEARCH_TIMEOUT = 8000;
 const XR_SEARCH_MAX_RESULTS = 6;
+const XR_IMAGE_TIMEOUT = 12000;
+const XR_IMAGE_MAX_BYTES = 4.5 * 1024 * 1024;
+const XR_IMAGE_MAX_COUNT = 2;
 
 // 1x1 测试图片，用于多模态能力实测
 const XR_TEST_IMAGE =
@@ -30,13 +34,14 @@ const XR_SYSTEM_PROMPT = `你是一位严格的事实核查员，必须对收到
 1. 优先依据搜索资料中信源可靠的内容（权威媒体、政府机构、专业辟谣平台）进行判断
 2. 搜索资料仅供参考，注意甄别其可信度与时效性；资料与推文无关时忽略之
 3. 没有可用搜索资料时，基于你自身知识分析判断，同样必须给出明确结论
-4. 输出必须简洁明确，不要冗余说明
+4. 若消息中附有推文配图：请将图片内容（含图中文字、人物、场景、图表）纳入判断，重点检查图文是否相符、图片是否断章取义、伪造或移花接木
+5. 输出必须简洁明确，不要冗余说明
 
 严格输出以下 JSON（不要输出 JSON 以外的任何文字）：
 {
   "verdict": "rumor" | "not_rumor" | "suspected",
   "summary": "一句话明确结论（不超过 40 字），直接回答是否是谣言",
-  "reasons": ["依据1", "依据2"]（最多 3 条，每条不超过 40 字，注明依据来自"搜索资料"还是"知识分析"）,
+  "reasons": ["依据1", "依据2"]（最多 3 条，每条不超过 40 字，注明依据来自"搜索资料"、"配图分析"还是"知识分析"）,
   "sources": ["支撑结论的来源域名，如 www.reuters.com"]（仅当使用了搜索资料时提供，最多 3 个，未用搜索资料则为空数组）
 }`;
 
@@ -80,13 +85,21 @@ async function requireEndpoint(settings) {
   }
 }
 
-// ---------- 联网搜索（Bing → DuckDuckGo 兜底，无需 API Key） ----------
-
 function fetchWithTimeout(url, opts = {}, ms = XR_SEARCH_TIMEOUT) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
   return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(timer));
 }
+
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+// ---------- 联网搜索（Bing → DuckDuckGo 兜底，无需 API Key） ----------
 
 function decodeEntities(s) {
   return String(s)
@@ -100,14 +113,6 @@ function decodeEntities(s) {
 
 function stripTags(s) {
   return decodeEntities(String(s).replace(/<[^>]*>/g, "")).replace(/\s+/g, " ").trim();
-}
-
-function hostOf(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
 }
 
 async function searchBing(query) {
@@ -178,6 +183,35 @@ async function webSearch(query) {
   throw makeError("联网搜索不可用", "SEARCH_ERROR");
 }
 
+// ---------- 配图处理 ----------
+
+function bufToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
+/** 下载图片并转为 data URL（保证任何视觉模型都能读取，无需服务商代拉远程图） */
+async function downloadImageAsDataUrl(url) {
+  const res = await fetchWithTimeout(url, {}, XR_IMAGE_TIMEOUT);
+  if (!res.ok) throw new Error("image http " + res.status);
+  const type = res.headers.get("content-type") || "";
+  if (!type.startsWith("image/")) throw new Error("not an image");
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength > XR_IMAGE_MAX_BYTES) throw new Error("image too large");
+  return "data:" + type.split(";")[0] + ";base64," + bufToBase64(buf);
+}
+
+function sanitizeImageUrls(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((u) => typeof u === "string" && /^https:\/\/pbs\.twimg\.com\//.test(u))
+    .slice(0, XR_IMAGE_MAX_COUNT);
+}
+
 // ---------- 消息路由 ----------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -185,7 +219,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   switch (msg.type) {
     case "CHECK_TEXT":
-      checkText(msg.text)
+      checkText(msg.text, msg.images)
         .then((result) => sendResponse({ ok: true, result }))
         .catch((err) =>
           sendResponse({ ok: false, error: err?.message || String(err), code: err?.code || "" })
@@ -209,7 +243,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
 
     case "TEST_VISION":
-      testVision()
+      testVision(msg.overrides)
         .then((info) => sendResponse({ ok: true, info }))
         .catch((err) =>
           sendResponse({ ok: false, error: err?.message || String(err), code: err?.code || "" })
@@ -224,7 +258,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ---------- 核心逻辑 ----------
 
-async function checkText(rawText) {
+async function checkText(rawText, rawImages) {
   const text = String(rawText || "").trim().slice(0, XR_MAX_TEXT_LEN);
   if (!text) throw makeError("请提供要检查的文本", "EMPTY_TEXT");
 
@@ -243,11 +277,62 @@ async function checkText(rawText) {
     }
   }
 
-  const content = await callLLM(text, settings, { materials });
-  const result = parseVerdict(content);
+  // 配图：下载转 base64（已知不支持视觉的模型直接跳过）
+  const imageUrls = sanitizeImageUrls(rawImages);
+  let imageDataUrls = [];
+  if (imageUrls.length) {
+    const stored = await chrome.storage.local.get(XR_CAPS_KEY);
+    const cap = (stored[XR_CAPS_KEY] || {})[settings.model];
+    if (!cap || cap.vision !== "no") {
+      for (const u of imageUrls) {
+        try {
+          imageDataUrls.push(await downloadImageAsDataUrl(u));
+        } catch {
+          /* 单张失败跳过 */
+        }
+      }
+    }
+  }
+
+  const result = await analyzeWithModel(text, settings, materials, imageDataUrls);
   result.searched = !!(settings.enableSearch && materials && materials.length);
+  result.imageCount = imageDataUrls.length && !result.skippedImages ? imageDataUrls.length : 0;
+  result.skippedImages = result.skippedImages || (imageUrls.length > 0 && result.imageCount === 0);
+
   pushHistory(text, result).catch(() => {});
   return result;
+}
+
+/** 调用模型分析；带图请求报"不支持图片"类错误时，自动降级重试纯文字 */
+async function analyzeWithModel(text, settings, materials, imageDataUrls) {
+  try {
+    const content = await callLLM(text, settings, { materials, images: imageDataUrls });
+    return parseVerdict(content);
+  } catch (err) {
+    const imgNotSupported =
+      imageDataUrls.length &&
+      /image|vision|multimodal|图片|多模态|视觉|unsupported|not support/i.test(
+        String(err?.message || "")
+      );
+    if (imgNotSupported) {
+      // 降级：不带走图重新请求
+      const content = await callLLM(text, settings, { materials, images: [] });
+      const result = parseVerdict(content);
+      result.skippedImages = true;
+      // 记录该模型不支持视觉，避免下次重复报错
+      await cacheVisionResult(settings.model, "no", "分析时实测确认不支持图片输入").catch(() => {});
+      return result;
+    }
+    throw err;
+  }
+}
+
+async function cacheVisionResult(model, vision, note) {
+  if (!model) return;
+  const stored = await chrome.storage.local.get(XR_CAPS_KEY);
+  const caps = stored[XR_CAPS_KEY] || {};
+  caps[model] = { vision, note, ts: Date.now() };
+  await chrome.storage.local.set({ [XR_CAPS_KEY]: caps });
 }
 
 async function testConnection() {
@@ -305,11 +390,12 @@ async function listModels() {
 }
 
 /**
- * 多模态能力实测：向模型发送 1x1 测试图片，根据响应判断是否支持图片输入
+ * 多模态能力实测：向模型发送 1x1 测试图片，根据响应判断是否支持图片输入。
+ * @param {object} [overrides] 未保存配置的实测（绑定校验用），覆盖 baseUrl/apiKey/model
  * @returns {{vision:"yes"|"no"|"unknown", note:string}}
  */
-async function testVision() {
-  const settings = await getSettings();
+async function testVision(overrides) {
+  const settings = { ...(await getSettings()), ...(overrides || {}) };
   await requireEndpoint(settings);
   if (!settings.model) throw makeError("请先填写模型名称", "NO_MODEL");
 
@@ -339,14 +425,18 @@ async function testVision() {
   }
 
   if (res.ok) {
-    return { vision: "yes", note: "实测通过：模型可接收图片输入" };
+    const info = { vision: "yes", note: "实测通过：模型可接收图片输入" };
+    await cacheVisionResult(settings.model, info.vision, info.note).catch(() => {});
+    return info;
   }
 
   const detail = await readErrorDetail(res);
   const notSupport =
     /image|vision|multimodal|图片|多模态|视觉|unsupported|not support|invalid.*type/i.test(detail);
   if ([400, 404, 415, 422].includes(res.status) && notSupport) {
-    return { vision: "no", note: "实测确认：该模型不支持图片输入" };
+    const info = { vision: "no", note: "实测确认：该模型不支持图片输入" };
+    await cacheVisionResult(settings.model, info.vision, info.note).catch(() => {});
+    return info;
   }
   return {
     vision: "unknown",
@@ -355,16 +445,27 @@ async function testVision() {
 }
 
 async function callLLM(text, settings, opts = {}) {
-  let userContent = text;
+  let textPart = text;
   if (opts.materials && opts.materials.length) {
     const lines = opts.materials.map(
       (r, i) => `[${i + 1}] ${r.title}\n${r.snippet || "（无摘要）"}\n来源：${hostOf(r.url) || r.url}`
     );
-    userContent =
+    textPart =
       `【待核查推文】\n${text}\n\n` +
       `【网络搜索资料】（共 ${lines.length} 条，供参考，请自行甄别可信度与相关性）\n` +
       lines.join("\n\n");
   }
+  if (opts.images && opts.images.length) {
+    textPart += `\n\n（本消息附有 ${opts.images.length} 张推文配图，请按系统指令结合图片内容分析）`;
+  }
+
+  const userContent =
+    opts.images && opts.images.length
+      ? [
+          { type: "text", text: textPart },
+          ...opts.images.map((url) => ({ type: "image_url", image_url: { url } })),
+        ]
+      : textPart;
 
   const body = {
     model: settings.model,

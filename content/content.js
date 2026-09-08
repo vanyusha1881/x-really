@@ -21,6 +21,29 @@
     return (h >>> 0).toString(36) + "-" + text.length;
   }
 
+  /**
+   * 提取推文配图 URL（仅 pbs.twimg.com/media，排除头像/emoji）。
+   * 统一转为 medium 尺寸以平衡清晰度与 token 消耗；最多 2 张。
+   */
+  function extractImageUrls(article) {
+    const urls = [];
+    const imgs = article.querySelectorAll('img[src*="pbs.twimg.com/media/"]');
+    for (const img of imgs) {
+      if (urls.length >= 2) break;
+      let src = img.getAttribute("src") || "";
+      if (!src) continue;
+      // 旧格式后缀 :small / :large 等
+      src = src.replace(/:(small|medium|large|[0-9a-z]+x[0-9a-z]+)$/i, "");
+      if (/([?&])name=/.test(src)) {
+        src = src.replace(/([?&])name=[^&]*/, "$1name=medium");
+      } else {
+        src += (src.includes("?") ? "&" : "?") + "name=medium";
+      }
+      if (!urls.includes(src)) urls.push(src);
+    }
+    return urls;
+  }
+
   /** 确保推文正文之后存在与当前文本哈希匹配的卡片容器，返回容器或 null */
   function ensureCardRoot(article, textEl, hash) {
     let root = article.querySelector(":scope .xr-root");
@@ -98,6 +121,9 @@
     // 卡片容器以点击时刻的文本为准，避免闭包中的旧文本
     const root = ensureCardRoot(article, textEl, hashText(text));
 
+    // 提取推文配图（若有），一并送入多模态分析
+    const images = extractImageUrls(article);
+
     // 加载态：图标替换为旋转指示器
     btn.classList.add("xr-loading");
     btn.classList.remove("xr-v-rumor", "xr-v-suspected", "xr-v-credible", "xr-v-unknown");
@@ -105,7 +131,7 @@
 
     let resp;
     try {
-      resp = await chrome.runtime.sendMessage({ type: "CHECK_TEXT", text });
+      resp = await chrome.runtime.sendMessage({ type: "CHECK_TEXT", text, images });
     } catch {
       resp = { ok: false, error: "扩展通信失败，请刷新页面重试" };
     }
