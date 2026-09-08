@@ -51,13 +51,14 @@ function xrBuildCard(resp) {
       .join("");
     const sources = (r.sources || []).slice(0, 3);
 
-    // 内容回执：让用户确认模型实际读到了什么（文本字数 + 引用推文 + 配图张数）
+    // 内容回执：让用户确认模型实际读到了什么（检索源 + 文本字数 + 引用推文 + 配图张数）
     let receipt = "";
     if (r.textChars) {
       const parts = [`正文 ${r.textChars} 字${r.textTruncated ? "（超长已截断）" : ""}`];
       if (r.quotedChars) parts.push(`引用推文 ${r.quotedChars} 字`);
       if (r.imageTotal) parts.push(`配图 ${r.imageCount}/${r.imageTotal} 张`);
-      receipt = `<div class="xr-foot xr-receipt">✉️ 已分析：${parts.join(" · ")}</div>`;
+      const eng = r.engine ? ` <span class="xr-eng">· 🔎 ${xrEscapeHtml(r.engine)}</span>` : "";
+      receipt = `<div class="xr-foot xr-receipt">✉️ 已分析：${parts.join(" · ")}${eng}</div>`;
     }
 
     let imgNote = "";

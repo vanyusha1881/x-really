@@ -248,15 +248,120 @@ async function searchBaidu(query) {
   return results;
 }
 
+/**
+ * Google 搜索（国际信源覆盖最好；需 Chrome 能访问 google.com）
+ * 解析以 <h3> 为锚点（Google 结果标题结构最稳定）：
+ * 向前找最近的真实链接，向后在 1200 字窗口内找摘要容器。
+ * 不依赖具体 class 名，抗 Google 前端改版能力较强。
+ */
+async function searchGoogle(query) {
+  const res = await fetchWithTimeout(
+    "https://www.google.com/search?num=10&hl=zh-CN&q=" + encodeURIComponent(query),
+    {
+      headers: {
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        Accept: "text/html,application/xhtml+xml",
+      },
+    }
+  );
+  if (!res.ok) throw new Error("google http " + res.status);
+  const html = await res.text();
+
+  const results = [];
+  // 主解析：锚定"包含 h3 的同一个 <a>" —— 链接与标题一一对应，不会跨结果块取错
+  const anchorRe = /<a[^>]*href="([^"]+)"[^>]*>\s*(?:<br>)?\s*<h3[^>]*>([\s\S]*?)<\/h3>/g;
+  let m;
+  while ((m = anchorRe.exec(html)) && results.length < XR_SEARCH_MAX_RESULTS) {
+    const title = stripTags(m[2]);
+    const url = normalizeGoogleUrl(m[1]);
+    if (title && url) {
+      pushGoogleResult(results, html, m.index + m[0].length, url, title);
+    }
+  }
+
+  // 兜底解析：Google 若改版导致上面失配，用"h3 前后窗口"再试一次
+  if (!results.length) {
+    const h3Re = /<h3[^>]*>([\s\S]*?)<\/h3>/g;
+    while ((m = h3Re.exec(html)) && results.length < XR_SEARCH_MAX_RESULTS) {
+      const title = stripTags(m[1]);
+      if (!title) continue;
+      const before = html.slice(Math.max(0, m.index - 400), m.index);
+      const hrefs = [...before.matchAll(/href="([^"]+)"/g)].map((x) => x[1]);
+      for (let i = hrefs.length - 1; i >= 0; i--) {
+        const url = normalizeGoogleUrl(hrefs[i]);
+        if (!url) continue;
+        if (pushGoogleResult(results, html, m.index + m[0].length, url, title)) break;
+      }
+    }
+  }
+
+  if (!results.length) throw new Error("google no results");
+  return results;
+}
+
+/** 处理 Google 的 href：老式 /url?q= 跳转需解码，绝对链接直接用 */
+function normalizeGoogleUrl(raw) {
+  if (!raw) return "";
+  let url = raw;
+  if (/^\/url\?/i.test(url)) {
+    const qm = /[?&]q=([^&]+)/.exec(url);
+    if (!qm) return "";
+    try {
+      url = decodeURIComponent(qm[1]);
+    } catch {
+      return "";
+    }
+  }
+  if (!/^https?:/i.test(url)) return "";
+  // 排除 Google 自家页面（搜索设置、图片、地图、缓存等）
+  const host = hostOf(url);
+  if (!host || /google\.(com|[a-z.]+)$/i.test(host)) return "";
+  return url;
+}
+
+/** 抽取摘要并入 results；返回是否成功（URL 重复/无效时返回 false，便于调用方继续尝试下一个链接） */
+function pushGoogleResult(results, html, from, url, title) {
+  if (results.some((r) => r.url === url)) return false;
+  const after = html.slice(from, from + 1200);
+  const sn =
+    /<div[^>]*class="[^"]*(?:VwiC3b|hgKElc|MUxGbd|lyLwlc|yDYNvb|IsZvec)[^"]*"[^>]*>([\s\S]*?)<\/div>/.exec(
+      after
+    ) || /<span[^>]*class="[^"]*aCOpRe[^"]*"[^>]*>([\s\S]*?)<\/span>/.exec(after);
+  const snippet = sn ? stripTags(sn[1]).slice(0, 200) : "";
+  results.push({ url, title, snippet });
+  return true;
+}
+
+const XR_SEARCH_ENGINES = [searchGoogle, searchBing, searchDuckDuckGo, searchBaidu];
+// 引擎健康度：失败后 30 分钟内不再尝试（避免每次核查都为不可达的引擎白等超时）
+const XR_ENGINE_TTL = 30 * 60 * 1000;
+const xrEngineDown = new Map();
+
+function engineName(engine) {
+  return engine.name.replace("search", "");
+}
+
+function engineAvailable(engine) {
+  const until = xrEngineDown.get(engine.name);
+  return !until || Date.now() > until;
+}
+
+function markEngineDown(engine) {
+  xrEngineDown.set(engine.name, Date.now() + XR_ENGINE_TTL);
+}
+
 /** 依次尝试多个搜索引擎，全部失败时抛出 SEARCH_ERROR。
- *  顺序：百度（中文本地新闻）→ Bing（国际/英文）→ DDG 兜底 */
+ *  顺序：Google（国际信源）→ Bing → DDG → 百度（中文本地新闻兜底）
+ *  注意：能否访问 Google 取决于 Chrome 的代理配置（扩展走 Chrome 网络栈），非插件自身能力。 */
 async function webSearch(query) {
   const q = query.replace(/\s+/g, " ").trim().slice(0, 120);
-  for (const engine of [searchBaidu, searchBing, searchDuckDuckGo]) {
+  for (const engine of XR_SEARCH_ENGINES) {
+    if (!engineAvailable(engine)) continue;
     try {
-      return await engine(q);
+      const rs = await engine(q);
+      return rs.map((r) => ({ ...r, engine: engineName(engine) }));
     } catch {
-      /* 尝试下一个引擎 */
+      markEngineDown(engine);
     }
   }
   throw makeError("联网搜索不可用", "SEARCH_ERROR");
@@ -489,6 +594,7 @@ async function checkText(rawText, rawImages, quotedChars) {
   // ---------- 内容回执（供卡片展示，让用户确认模型实际读到了什么） ----------
   result.searched = !!(settings.enableSearch && materials && materials.length);
   result.searchOff = !settings.enableSearch;
+  result.engine = result.searched ? materials[0]?.engine || "" : "";
   result.textChars = text.length;
   result.textTruncated = textTruncated;
   result.quotedChars = Number(quotedChars) || 0;
