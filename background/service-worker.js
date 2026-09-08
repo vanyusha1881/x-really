@@ -15,7 +15,7 @@ const XR_MAX_TEXT_LEN = 8000; // X Premium 长推文可达 2.5 万字，8k 覆�
 const XR_HISTORY_KEY = "xrHistory";
 const XR_CAPS_KEY = "xrCaps"; // { [model]: { vision, note, ts } } 多模态实测缓存
 const XR_HISTORY_MAX = 20;
-const XR_SEARCH_TIMEOUT = 8000;
+const XR_SEARCH_TIMEOUT = 10000;
 const XR_SEARCH_MAX_RESULTS = 6;
 const XR_IMAGE_TIMEOUT = 12000;
 const XR_IMAGE_MAX_BYTES = 4.5 * 1024 * 1024;
@@ -46,10 +46,12 @@ const XR_SYSTEM_PROMPT = `你是一位严谨的事实核查员。你核查的是
 
 【关键警示 — 防止常见误判】
 - 真实事件被改写/拼接/夸大（把不同时期的事件混在一起）≠ 谣言。核心事实存在时，结论应为 not_rumor，可在依据里指出"细节拼接/时间错位"。
+- **严禁**以"无权威媒体报道"、"没有相关记录"、"符合谣言编造模式"、"情节离奇"作为判 rumor 的依据——你无法穷举媒体报道，真实事件往往比想象更离奇。这类说辞本身就是编造。
 - 搜索资料命中"年份列表"、"无关主题"时，**忽略这些资料**，回到你自己的知识判断。
 - 你确切知道的人物/事件（哪怕搜索没命中），**必须用知识判断**，不要因为搜索失败就否认事实存在。
 - 推文若带配图：将图片内容纳入判断（图文是否相符、是否断章取义、伪造、移花接木）。
 - 知识截止后的新事件：搜索资料是唯一可用的外部依据；此时搜索也失败则判 suspected，不要瞎猜。
+- **搜索不可用时判 rumor 的额外门槛**：只有当你确切掌握与推文矛盾的具体事实（可查证的人名/机构/时间/数据）时才可判 rumor；仅凭"不知道/没听说过/情节离奇"必须判 suspected。
 
 【输出严格 JSON】（不要输出 JSON 以外的任何文字，包括 markdown 围栏）
 {
@@ -57,6 +59,26 @@ const XR_SYSTEM_PROMPT = `你是一位严谨的事实核查员。你核查的是
   "summary": "一句话明确结论（不超过 40 字），直接回答是否是谣言",
   "reasons": ["依据1", "依据2"]（最多 3 条，每条不超过 40 字，注明依据来自"搜索资料"、"配图分析"或"知识分析"）,
   "sources": ["支撑结论的来源域名，如 www.reuters.com"]（仅当使用了搜索资料时提供，最多 3 个；未用搜索资料则为空数组）
+}`;
+
+// 谣言复核 prompt：搜索失败时判 rumor 必须过这道关——给不出确切矛盾事实就降级 suspected
+const XR_VERIFY_PROMPT = `你之前把下面这条推文判定为"谣言"。现在必须复核这次判定。
+
+复核标准：
+- 判"rumor"的唯一合法依据：你**确切掌握**与推文矛盾的具体事实——具体到人名、机构、时间、数据，且可查证。
+- "没听说过"、"无权威媒体报道过"、"情节离奇"、"符合谣言编造模式"都**不是**依据。你无法穷举媒体报道，真实事件往往比想象更离奇（例如官员受贿数亿、劫狱脱逃等曾被大量真实报道）。
+- 推文把不同时期的事件拼接、时间错位，也不改变"核心事实真实"的性质。
+
+输出规则：
+- 确切掌握矛盾事实 → 维持 "rumor"，reasons 里必须写出该具体事实（注明"知识分析"）
+- 给不出 → 改判 "suspected"，summary 说明"搜索不可用，无法确证"
+
+严格输出 JSON（不要输出任何其他文字）：
+{
+  "verdict": "rumor" | "suspected",
+  "summary": "一句话结论（不超过 40 字）",
+  "reasons": ["依据1", "依据2"]（最多 3 条，每条不超过 40 字，注明"知识分析"）,
+  "sources": []
 }`;
 
 // ---------- 工具 ----------
@@ -302,22 +324,18 @@ function countRelevantHits(materials, text) {
   return hits;
 }
 
-/** 多查询汇总去重，返回前 N 条 */
+/** 多查询并行检索（Promise.allSettled），结果汇总去重，返回前 N 条 */
 async function searchMulti(queries) {
+  const settled = await Promise.allSettled(queries.map((q) => webSearch(q)));
   const all = [];
   const seen = new Set();
-  for (const q of queries) {
-    try {
-      const res = await webSearch(q);
-      for (const r of res) {
-        if (!seen.has(r.url)) {
-          seen.add(r.url);
-          all.push(r);
-        }
+  for (const s of settled) {
+    if (s.status !== "fulfilled" || !Array.isArray(s.value)) continue;
+    for (const r of s.value) {
+      if (!seen.has(r.url)) {
+        seen.add(r.url);
+        all.push(r);
       }
-      if (all.length >= XR_SEARCH_MAX_RESULTS) break;
-    } catch {
-      /* 单个查询失败不影响其他查询 */
     }
   }
   return all.slice(0, XR_SEARCH_MAX_RESULTS);
@@ -449,8 +467,28 @@ async function checkText(rawText, rawImages, quotedChars) {
     searchHitEntities,
   });
 
+  // ---------- 谣言复核关：搜索失败/无有效资料时判 rumor，必须复核 ----------
+  // 防止模型在无证据情况下以"没听说过/无媒体报道"给真实事件扣谣言帽（实测高频误判路径）
+  if (result.verdict === "rumor" && !result.searched) {
+    try {
+      const content = await callLLM(text, settings, {
+        images: imageDataUrls,
+        searchFailed: true,
+        verify: true,
+      });
+      const vr = parseVerdict(content);
+      if (vr.verdict !== "rumor") {
+        // 复核未通过：降级为 suspected，保留回执字段
+        Object.assign(result, vr, { rumorDowngraded: true });
+      }
+    } catch {
+      /* 复核失败时保留原判定 */
+    }
+  }
+
   // ---------- 内容回执（供卡片展示，让用户确认模型实际读到了什么） ----------
   result.searched = !!(settings.enableSearch && materials && materials.length);
+  result.searchOff = !settings.enableSearch;
   result.textChars = text.length;
   result.textTruncated = textTruncated;
   result.quotedChars = Number(quotedChars) || 0;
@@ -630,7 +668,10 @@ async function callLLM(text, settings, opts = {}) {
   } else if (opts.searchFailed) {
     textPart =
       `【待核查推文】\n${text}\n\n` +
-      `【说明】联网搜索当前不可用（可能受网络限制）。请完全基于自身知识判断；超出知识范围时判 suspected，不要凭印象猜 rumor。`;
+      `【重要说明】联网搜索当前不可用。注意："搜索不到"≠"不存在"。\n` +
+      `- 请完全基于自身知识判断；超出知识范围时判 suspected。\n` +
+      `- 严禁使用"无权威媒体报道"、"没有记录"作为判谣言的依据——你没有搜索，无法知道媒体报道了什么。\n` +
+      `- 仅凭"情节离奇/没听说过"只能判 suspected，不得判 rumor。`;
   }
   if (opts.images && opts.images.length) {
     textPart += `\n\n（本消息附有 ${opts.images.length} 张推文配图，请按系统指令结合图片内容分析）`;
@@ -647,7 +688,7 @@ async function callLLM(text, settings, opts = {}) {
   const body = {
     model: settings.model,
     messages: [
-      { role: "system", content: XR_SYSTEM_PROMPT },
+      { role: "system", content: opts.verify ? XR_VERIFY_PROMPT : XR_SYSTEM_PROMPT },
       { role: "user", content: userContent },
     ],
     temperature: 0.2,
