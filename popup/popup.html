@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-page-node-id="TCu89BcDgnHhj2MB1cSibc">
+<head data-page-node-id="f2qLbs9jEGjH1VWoM4QPtj">
+  <meta charset="UTF-8" data-page-node-id="Bzu6cXhttCiMgTHgw50Tuo" />
+  <title>X-Really 谣言检查</title>
+  <link rel="stylesheet" href="../shared/common.css" data-page-node-id="N7mcIHZUQ5DDIjWUmkItGv" />
+  <link rel="stylesheet" href="popup.css" data-page-node-id="K06KHUd3mo46Du51APGEkC" />
+</head>
+<body data-page-node-id="xysfo0BG8EpjP6lY5IEbN6">
+  <header class="top" data-page-node-id="hkUpD5KMxTNT1c1lF4WmR8">
+    <svg width="34" height="34" viewBox="0 0 24 24" fill="none" aria-hidden="true" data-page-node-id="C2cetbE7c8YiAJInJO25Hk">
+      <defs data-page-node-id="8TElANMwUD0h4fCCGu9hFO">
+        <linearGradient id="xr-g" x1="0" y1="0" x2="1" y2="1" data-page-node-id="RRUN0CykTCshvUBJB7eigo">
+          <stop offset="0" stop-color="#6366f1" data-page-node-id="ACvPUXMTzG7tY62lIq421y" />
+          <stop offset="1" stop-color="#a855f7" data-page-node-id="ihqQpJ3PsbgGlBiWlEaIxL" />
+        </linearGradient>
+      </defs>
+      <path d="M12 2.5l7.5 3.2v5.3c0 4.8-3.2 8.6-7.5 10.5-4.3-1.9-7.5-5.7-7.5-10.5V5.7z" fill="url(#xr-g)" data-page-node-id="K8CAMThrVvEmjSEJ9aEbOk" />
+      <path d="M8.8 12.2l2.2 2.2 4.2-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round" data-page-node-id="UG1hW3XAvsmdyJfnRcAiF8" />
+    </svg>
+    <div class="top-text" data-page-node-id="pOZjlLXcuSbWLFsRGKvR4X">
+      <h1 data-page-node-id="y2T7fYFG1uVlXEJ67mZlUT">X-Really</h1>
+      <p data-page-node-id="tIqZ7hW9T38KhNXQwn02Ut">推文谣言检查器</p>
+    </div>
+    <button id="openOptions" class="icon-btn" title="设置" aria-label="设置" data-page-node-id="tbpK6CdePoQXoLb4stRV2A">
+      <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-page-node-id="bSuDUzPoZpNADbbJ9hpGYW">
+        <circle cx="12" cy="12" r="3" data-page-node-id="xDV71NUTX2uckqD6FTIOZ5" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" data-page-node-id="MK5LreRjHhsw3RElqqKS0O" />
+      </svg>
+    </button>
+  </header>
+
+  <div id="statusBar" class="status" data-page-node-id="09914LFncFaeEB8hqM44oe"></div>
+
+  <section class="check-box" data-page-node-id="nksWyXqlmuWss7nP409cqa">
+    <textarea id="inputText" rows="4" placeholder="粘贴推文或任意文本，检查它是否为谣言…（Ctrl+Enter 提交）"></textarea>
+    <button id="checkBtn" class="primary-btn full" data-page-node-id="leu4LPd4BAfdEjGp1p9Ew2"></button>
+  </section>
+
+  <div id="resultBox" data-page-node-id="VrVl7N23D1BAjjamsCuGmO"></div>
+
+  <section class="history" data-page-node-id="73DwVUa7nFmCG0OqDgkhKg">
+    <div class="history-head" data-page-node-id="KJh8hK6b0dkDgIbsFxh4rI">
+      <h2 data-page-node-id="WOapNGjxogXWsHeatW0VHf">最近检测</h2>
+      <button id="clearHistory" class="text-btn" data-page-node-id="zwDwBc5O9VOQODLEUUrPWV">清空</button>
+    </div>
+    <ul id="historyList" data-page-node-id="33kp7y2lv9xV6F1kX1FHMB"></ul>
+  </section>
+
+  <script src="../shared/ui.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -2,6 +2,9 @@
 logs
 *.log
 npm-debug.log*
+
+# WorkBuddy local working data
+.workbuddy/
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*

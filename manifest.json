@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "X-Really · 推文谣言检查器",
+  "description": "在 X (Twitter) 上检查推文内容是否为谣言：AI 分析可信度、给出理由与建议。支持任意 OpenAI 兼容接口。",
+  "version": "0.1.0",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": ["storage"],
+  "host_permissions": ["https://x.com/*", "https://twitter.com/*", "https://*/*"],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["shared/ui.js", "content/content.js"],
+      "css": ["content/content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "X-Really 谣言检查",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "options_page": "options/options.html"
+}

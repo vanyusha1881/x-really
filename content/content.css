@@ -1,0 +1,171 @@
+/* X-Really 注入样式：按钮 + 结果卡片 */
+
+.xr-root {
+  margin: 2px 0 4px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+
+/* ---- 检查按钮 ---- */
+
+.xr-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  margin: 2px 0;
+  border-radius: 999px;
+  border: 1px solid rgba(113, 118, 124, 0.45);
+  background: transparent;
+  color: #71767b;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.xr-btn:hover {
+  color: #1d9bf0;
+  border-color: rgba(29, 155, 240, 0.6);
+  background: rgba(29, 155, 240, 0.08);
+}
+.xr-btn:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+.xr-btn svg {
+  flex: none;
+}
+.xr-btn.xr-loading {
+  color: #1d9bf0;
+  border-color: rgba(29, 155, 240, 0.5);
+}
+
+.xr-spin {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  border-top-color: currentColor;
+  border-right-color: currentColor;
+  animation: xr-rotate 0.7s linear infinite;
+}
+@keyframes xr-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- 结果卡片（深色，适配 X 明/暗双主题） ---- */
+
+.xr-card {
+  position: relative;
+  max-width: 560px;
+  margin: 6px 0;
+  padding: 10px 12px 8px 16px;
+  border-radius: 14px;
+  background: rgba(18, 22, 32, 0.94);
+  color: #e7e9ea;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+  font-size: 13px;
+  line-height: 1.6;
+  animation: xr-in 0.18s ease-out;
+}
+.xr-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--xr-accent, #94a3b8);
+}
+.xr-v-rumor {
+  --xr-accent: #f43f5e;
+}
+.xr-v-suspected {
+  --xr-accent: #f59e0b;
+}
+.xr-v-credible {
+  --xr-accent: #10b981;
+}
+.xr-v-unknown,
+.xr-v-error {
+  --xr-accent: #94a3b8;
+}
+
+.xr-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.xr-badge {
+  font-weight: 700;
+  color: var(--xr-accent, #e7e9ea);
+}
+.xr-conf {
+  margin-left: auto;
+  font-size: 12px;
+  color: #8b98a5;
+}
+.xr-close {
+  border: 0;
+  background: transparent;
+  color: #8b98a5;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.xr-close:hover {
+  color: #e7e9ea;
+}
+.xr-summary {
+  margin-top: 4px;
+  font-weight: 500;
+}
+.xr-reasons {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: #c3ccd6;
+}
+.xr-reasons li {
+  margin: 3px 0;
+}
+.xr-advice {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #d7dde3;
+  font-size: 12.5px;
+}
+.xr-foot {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #6b7683;
+}
+.xr-cfg-btn {
+  margin-top: 6px;
+  border: 1px solid rgba(29, 155, 240, 0.5);
+  background: rgba(29, 155, 240, 0.12);
+  color: #1d9bf0;
+  border-radius: 8px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+@keyframes xr-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}

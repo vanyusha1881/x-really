@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>X-Really 设置</title>
+  <link rel="stylesheet" href="../shared/common.css" />
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+<main class="wrap">
+  <header class="page-head">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="xr-g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#6366f1" />
+          <stop offset="1" stop-color="#a855f7" />
+        </linearGradient>
+      </defs>
+      <path d="M12 2.5l7.5 3.2v5.3c0 4.8-3.2 8.6-7.5 10.5-4.3-1.9-7.5-5.7-7.5-10.5V5.7z" fill="url(#xr-g)" />
+      <path d="M8.8 12.2l2.2 2.2 4.2-4.6" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+    <div>
+      <h1>X-Really 设置</h1>
+      <p>配置用于谣言分析的 AI 接口（OpenAI 兼容协议）</p>
+    </div>
+  </header>
+
+  <section class="panel">
+    <label class="field">
+      <span class="field-label">接口地址（Base URL）</span>
+      <input id="optBaseUrl" type="text" placeholder="https://api.openai.com/v1" spellcheck="false" />
+      <span class="hint">
+        兼容 OpenAI 协议的服务均可使用，例如：<br />
+        DeepSeek：https://api.deepseek.com/v1 &nbsp;·&nbsp; Moonshot：https://api.moonshot.cn/v1
+      </span>
+    </label>
+
+    <label class="field">
+      <span class="field-label">API Key</span>
+      <input id="optApiKey" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+      <span class="hint">仅保存在你的浏览器（chrome.storage.sync），不会上传到任何第三方服务器</span>
+    </label>
+
+    <label class="field">
+      <span class="field-label">模型名称</span>
+      <input id="optModel" type="text" placeholder="gpt-4o-mini" spellcheck="false" />
+    </label>
+
+    <div class="actions">
+      <button id="saveBtn" class="primary-btn">保存设置</button>
+      <button id="testBtn" class="ghost-btn">测试连接</button>
+    </div>
+    <div id="testResult" class="test-result"></div>
+  </section>
+
+  <section class="panel tip">
+    <h2>使用提示</h2>
+    <ul>
+      <li>打开 <b>x.com</b>，每条推文下方会出现「检查谣言」按钮，点击即可分析。</li>
+      <li>也可以点击浏览器工具栏中的扩展图标，直接粘贴文本进行检查。</li>
+      <li>AI 判定仅供参考，请勿作为事实认定的唯一依据。</li>
+    </ul>
+  </section>
+</main>
+
+<script src="options.js"></script>
+</body>
+</html>
