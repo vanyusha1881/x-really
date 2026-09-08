@@ -23,13 +23,13 @@
 
   /**
    * 提取推文配图 URL（仅 pbs.twimg.com/media，排除头像/emoji）。
-   * 统一转为 medium 尺寸以平衡清晰度与 token 消耗；最多 2 张。
+   * 统一转为 medium 尺寸以平衡清晰度与 token 消耗；最多 4 张（X 单推上限）。
    */
   function extractImageUrls(article) {
     const urls = [];
     const imgs = article.querySelectorAll('img[src*="pbs.twimg.com/media/"]');
     for (const img of imgs) {
-      if (urls.length >= 2) break;
+      if (urls.length >= 4) break;
       let src = img.getAttribute("src") || "";
       if (!src) continue;
       // 旧格式后缀 :small / :large 等
@@ -42,6 +42,24 @@
       if (!urls.includes(src)) urls.push(src);
     }
     return urls;
+  }
+
+  /**
+   * 提取推文完整内容：主文本 + 引用推文文本（若有）+ 配图 URL。
+   * 引用推文往往是事实核查的真正对象，必须一并送入模型。
+   * @returns {{text:string, quotedText:string, imageUrls:string[]}}
+   */
+  function extractTweetContent(article) {
+    const textEls = article.querySelectorAll('[data-testid="tweetText"]');
+    const mainText = (textEls[0]?.innerText || "").trim();
+    // 其余 tweetText 属于引用推文（X 的 quote 块内）
+    const quotedText = [...textEls]
+      .slice(1)
+      .map((el) => el.innerText.trim())
+      .filter(Boolean)
+      .join("\n");
+    const imageUrls = extractImageUrls(article);
+    return { mainText, quotedText, imageUrls };
   }
 
   /** 确保推文正文之后存在与当前文本哈希匹配的卡片容器，返回容器或 null */
@@ -115,14 +133,17 @@
 
     const article = btn.closest("article[data-testid='tweet']");
     const textEl = article && article.querySelector('[data-testid="tweetText"]');
-    const text = textEl ? textEl.innerText.trim() : "";
-    if (!text || !article) return;
+    if (!article || !textEl) return;
+
+    // 提取完整内容（主文本 + 引用推文 + 配图）
+    const { mainText, quotedText, imageUrls } = extractTweetContent(article);
+    if (!mainText) return;
+    const text = quotedText
+      ? `${mainText}\n\n【引用推文】\n${quotedText}`
+      : mainText;
 
     // 卡片容器以点击时刻的文本为准，避免闭包中的旧文本
-    const root = ensureCardRoot(article, textEl, hashText(text));
-
-    // 提取推文配图（若有），一并送入多模态分析
-    const images = extractImageUrls(article);
+    const root = ensureCardRoot(article, textEl, hashText(mainText));
 
     // 加载态：图标替换为旋转指示器
     btn.classList.add("xr-loading");
@@ -131,7 +152,12 @@
 
     let resp;
     try {
-      resp = await chrome.runtime.sendMessage({ type: "CHECK_TEXT", text, images });
+      resp = await chrome.runtime.sendMessage({
+        type: "CHECK_TEXT",
+        text,
+        images: imageUrls,
+        quotedChars: quotedText.length,
+      });
     } catch {
       resp = { ok: false, error: "扩展通信失败，请刷新页面重试" };
     }

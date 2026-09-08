@@ -50,6 +50,26 @@ function xrBuildCard(resp) {
       .map((x) => `<li>${xrEscapeHtml(x)}</li>`)
       .join("");
     const sources = (r.sources || []).slice(0, 3);
+
+    // 内容回执：让用户确认模型实际读到了什么（文本字数 + 引用推文 + 配图张数）
+    let receipt = "";
+    if (r.textChars) {
+      const parts = [`正文 ${r.textChars} 字${r.textTruncated ? "（超长已截断）" : ""}`];
+      if (r.quotedChars) parts.push(`引用推文 ${r.quotedChars} 字`);
+      if (r.imageTotal) parts.push(`配图 ${r.imageCount}/${r.imageTotal} 张`);
+      receipt = `<div class="xr-foot xr-receipt">✉️ 已分析：${parts.join(" · ")}</div>`;
+    }
+
+    let imgNote = "";
+    if (r.imageCount > 0) {
+      const denom = r.imageTotal > r.imageCount ? `/${r.imageTotal}` : "";
+      const fail = r.imageFailed ? `（${r.imageFailed} 张下载失败）` : "";
+      imgNote = `<div class="xr-src">🖼 已结合 ${r.imageCount}${denom} 张配图分析${fail}</div>`;
+    } else if (r.imageTotal > 0) {
+      const reason = r.skippedImages ? "当前模型不支持图片输入" : "图片下载失败";
+      imgNote = `<div class="xr-foot">⚠️ 配图未分析：${reason}</div>`;
+    }
+
     card.innerHTML = `
       <div class="xr-card-head">
         <span class="xr-badge">${meta.icon} ${meta.label}</span>
@@ -58,9 +78,9 @@ function xrBuildCard(resp) {
       ${r.summary ? `<div class="xr-summary">${xrEscapeHtml(r.summary)}</div>` : ""}
       ${reasons ? `<ul class="xr-reasons">${reasons}</ul>` : ""}
       ${sources.length ? `<div class="xr-src">🔍 来源：${sources.map(xrEscapeHtml).join(" · ")}</div>` : ""}
-      ${r.imageCount ? `<div class="xr-src">🖼 已结合 ${r.imageCount} 张配图分析</div>` : ""}
+      ${imgNote}
       ${r.searched === false ? `<div class="xr-foot">联网检索不可用，本次基于 AI 知识判断</div>` : ""}
-      ${r.skippedImages ? `<div class="xr-foot">配图未分析：当前模型不支持图片输入</div>` : ""}
+      ${receipt}
     `;
   }
 

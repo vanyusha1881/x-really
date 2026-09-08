@@ -11,7 +11,7 @@ const XR_DEFAULTS = {
   enableSearch: true,
 };
 
-const XR_MAX_TEXT_LEN = 4000;
+const XR_MAX_TEXT_LEN = 8000; // X Premium 长推文可达 2.5 万字，8k 覆盖绝大多数；超长会截断并在卡片标注
 const XR_HISTORY_KEY = "xrHistory";
 const XR_CAPS_KEY = "xrCaps"; // { [model]: { vision, note, ts } } 多模态实测缓存
 const XR_HISTORY_MAX = 20;
@@ -19,7 +19,7 @@ const XR_SEARCH_TIMEOUT = 8000;
 const XR_SEARCH_MAX_RESULTS = 6;
 const XR_IMAGE_TIMEOUT = 12000;
 const XR_IMAGE_MAX_BYTES = 4.5 * 1024 * 1024;
-const XR_IMAGE_MAX_COUNT = 2;
+const XR_IMAGE_MAX_COUNT = 4; // X 单条推文最多 4 张图，全部纳入分析
 
 // 1x1 测试图片，用于多模态能力实测
 const XR_TEST_IMAGE =
@@ -359,7 +359,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   switch (msg.type) {
     case "CHECK_TEXT":
-      checkText(msg.text, msg.images)
+      checkText(msg.text, msg.images, msg.quotedChars)
         .then((result) => sendResponse({ ok: true, result }))
         .catch((err) =>
           sendResponse({ ok: false, error: err?.message || String(err), code: err?.code || "" })
@@ -398,8 +398,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ---------- 核心逻辑 ----------
 
-async function checkText(rawText, rawImages) {
-  const text = String(rawText || "").trim().slice(0, XR_MAX_TEXT_LEN);
+async function checkText(rawText, rawImages, quotedChars) {
+  const fullText = String(rawText || "").trim();
+  const text = fullText.slice(0, XR_MAX_TEXT_LEN);
+  const textTruncated = fullText.length > XR_MAX_TEXT_LEN;
   if (!text) throw makeError("请提供要检查的文本", "EMPTY_TEXT");
 
   const settings = await getSettings();
@@ -422,8 +424,10 @@ async function checkText(rawText, rawImages) {
 
   // 配图：下载转 base64（已知不支持视觉的模型直接跳过）
   const imageUrls = sanitizeImageUrls(rawImages);
+  const imageTotal = imageUrls.length;
   let imageDataUrls = [];
-  if (imageUrls.length) {
+  let imageFailed = 0;
+  if (imageTotal) {
     const stored = await chrome.storage.local.get(XR_CAPS_KEY);
     const cap = (stored[XR_CAPS_KEY] || {})[settings.model];
     if (!cap || cap.vision !== "no") {
@@ -431,9 +435,12 @@ async function checkText(rawText, rawImages) {
         try {
           imageDataUrls.push(await downloadImageAsDataUrl(u));
         } catch {
-          /* 单张失败跳过 */
+          imageFailed++;
         }
       }
+    } else {
+      // 已确认模型不支持视觉：不下载，直接全部计入"未分析"
+      imageFailed = imageTotal;
     }
   }
 
@@ -441,9 +448,16 @@ async function checkText(rawText, rawImages) {
     searchFailed,
     searchHitEntities,
   });
+
+  // ---------- 内容回执（供卡片展示，让用户确认模型实际读到了什么） ----------
   result.searched = !!(settings.enableSearch && materials && materials.length);
-  result.imageCount = imageDataUrls.length && !result.skippedImages ? imageDataUrls.length : 0;
-  result.skippedImages = result.skippedImages || (imageUrls.length > 0 && result.imageCount === 0);
+  result.textChars = text.length;
+  result.textTruncated = textTruncated;
+  result.quotedChars = Number(quotedChars) || 0;
+  result.imageTotal = imageTotal;
+  // 走图被模型拒绝后降级纯文本时，skippedImages 已置 true，配图全部未纳入
+  result.imageCount = result.skippedImages ? 0 : imageDataUrls.length;
+  result.imageFailed = result.skippedImages ? imageTotal : imageFailed;
 
   pushHistory(text, result).catch(() => {});
   return result;
