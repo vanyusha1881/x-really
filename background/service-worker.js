@@ -1,4 +1,6 @@
 // X-Really 后台服务：接收检查请求，联网检索资料 + 调用 OpenAI 兼容接口完成谣言核查
+// v0.5: 多角度检索（实体提取 + 去年份前缀）+ 搜索结果相关性提示
+//       修复 v0.4 在长推文/真实事件被夸张叙述时易误判为"谣言"的问题
 // v0.4: 支持推文配图多模态分析（下载转 base64），testVision 支持未保存配置实测，
 //       图片请求报错时自动降级为纯文字分析
 
@@ -23,26 +25,35 @@ const XR_IMAGE_MAX_COUNT = 2;
 const XR_TEST_IMAGE =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
-const XR_SYSTEM_PROMPT = `你是一位严格的事实核查员，必须对收到的推文做出明确的真假判断。
+const XR_SYSTEM_PROMPT = `你是一位严谨的事实核查员。你核查的是「推文中的具体事实是否属实」，而不是「推文听起来像不像真的」。
 
-判断规则（必须遵守）：
-1. 内容明显虚假、与可靠信源矛盾、或符合已被辟谣的谣言模式 → 判定"rumor"（谣言）
-2. 内容与已知事实相符、或信源可靠且无矛盾 → 判定"not_rumor"（不是谣言）
-3. "suspected"（存疑）只允许在确实无法判断时使用：信息过少、话题完全超出可查证范围、且搜索后仍无任何相关资料。严禁用"存疑"回避明确判断，绝大多数推文都应给出 rumor 或 not_rumor。
+【核查流程】
+1. 提取推文里的核心事实点（人名 / 公司 / 地点 / 事件 / 数字 / 时间）。
+2. 对照搜索资料与自身知识，逐条核实。
+3. 综合判定。
 
-你会收到推文原文，以及（可能提供的）网络搜索资料。请：
-1. 优先依据搜索资料中信源可靠的内容（权威媒体、政府机构、专业辟谣平台）进行判断
-2. 搜索资料仅供参考，注意甄别其可信度与时效性；资料与推文无关时忽略之
-3. 没有可用搜索资料时，基于你自身知识分析判断，同样必须给出明确结论
-4. 若消息中附有推文配图：请将图片内容（含图中文字、人物、场景、图表）纳入判断，重点检查图文是否相符、图片是否断章取义、伪造或移花接木
-5. 输出必须简洁明确，不要冗余说明
+【判定规则 — 严格遵守】
+- "rumor"（谣言）：必须满足下列任一条件——
+  · 搜索资料中存在与推文相反的明确事实（来自权威媒体 / 政府机构 / 知名辟谣平台）
+  · 推文内容已被权威信源明确辟谣
+  · 推文内容违反基础科学常识（如"地球是方的"）
+  仅凭"听起来离奇"、"搜索结果不直接相关"、"推文叙述夸张"都**不能**判 rumor。
+- "not_rumor"（不是谣言）：核心事实与搜索资料或公认知识相符，或属于真实事件（真实事件本身往往比叙述更戏剧化，不能因为夸张就否定事实本身）。
+- "suspected"（存疑）：搜索资料完全无关、且超出自身知识范围。**只在你确实无能力判断时使用**。
 
-严格输出以下 JSON（不要输出 JSON 以外的任何文字）：
+【关键警示 — 防止常见误判】
+- 真实事件被改写/拼接/夸大（把不同时期的事件混在一起）≠ 谣言。核心事实存在时，结论应为 not_rumor，可在依据里指出"细节拼接/时间错位"。
+- 搜索资料命中"年份列表"、"无关主题"时，**忽略这些资料**，不要据此判谣言。
+- 推文提到的人物/事件如果你在自身知识范围内确实知道，**优先用知识判断**（不要因为搜索没命中就否认）。
+- 推文若带配图：将图片内容纳入判断（图文是否相符、是否断章取义、伪造、移章取义、移花接木）。
+- 知识截止后的新事件，搜索资料是唯一依据；搜索失败则判 suspected，不要瞎猜。
+
+【输出严格 JSON】（不要输出 JSON 以外的任何文字，包括 markdown 围栏）
 {
   "verdict": "rumor" | "not_rumor" | "suspected",
   "summary": "一句话明确结论（不超过 40 字），直接回答是否是谣言",
-  "reasons": ["依据1", "依据2"]（最多 3 条，每条不超过 40 字，注明依据来自"搜索资料"、"配图分析"还是"知识分析"）,
-  "sources": ["支撑结论的来源域名，如 www.reuters.com"]（仅当使用了搜索资料时提供，最多 3 个，未用搜索资料则为空数组）
+  "reasons": ["依据1", "依据2"]（最多 3 条，每条不超过 40 字，注明依据来自"搜索资料"、"配图分析"或"知识分析"）,
+  "sources": ["支撑结论的来源域名，如 www.reuters.com"]（仅当使用了搜索资料时提供，最多 3 个；未用搜索资料则为空数组）
 }`;
 
 // ---------- 工具 ----------
@@ -170,10 +181,53 @@ async function searchDuckDuckGo(query) {
   return results;
 }
 
-/** 依次尝试多个搜索引擎，全部失败时抛出 SEARCH_ERROR */
+/**
+ * 百度搜索（中文本地新闻覆盖远胜 Bing）
+ * 百度结果链接是 https://www.baidu.com/link?url=... 跳转形式，浏览器扩展用户点开时会自动 302 到真实 URL；
+ * 对插件来说只需 URL 能被模型识别即可。
+ */
+async function searchBaidu(query) {
+  const res = await fetchWithTimeout(
+    "https://www.baidu.com/s?wd=" + encodeURIComponent(query) + "&rn=10",
+    {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        Accept: "text/html,application/xhtml+xml",
+      },
+    }
+  );
+  if (!res.ok) throw new Error("baidu http " + res.status);
+  const html = await res.text();
+
+  const results = [];
+  // 百度结构：<h3><a href="...">title</a></h3> 后续摘要块在 result 容器内
+  // 用 lookahead 在 h3/容器结束/下一个结果处停止，避免吃到下一个 result 块
+  const blockRe =
+    /<h3[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<\/h3>([\s\S]*?)(?=<h3|<\/div>\s*<div\s+class="result|<!--\s*result\s*-->|<!--\s*new\s*-->|$)/g;
+  let m;
+  while ((m = blockRe.exec(html)) && results.length < XR_SEARCH_MAX_RESULTS) {
+    const url = m[1];
+    const title = stripTags(m[2]);
+    if (!title || !/^https?:/i.test(url)) continue;
+    // 摘要截取：去掉 h3 后面的内嵌 JSON 元数据（百度 SPA 模板残留），只保留可见文本
+    let raw = m[3] || "";
+    raw = raw.split("}],")[0]; // 截断到 SPA 数据标签之前
+    const snippet = stripTags(raw).slice(0, 200);
+    // 过滤"百度百科/百度图片/百度知道"等导航型结果
+    if (/^(百度|baidu)/i.test(title)) continue;
+    results.push({ url, title, snippet });
+  }
+  if (!results.length) throw new Error("baidu no results");
+  return results;
+}
+
+/** 依次尝试多个搜索引擎，全部失败时抛出 SEARCH_ERROR。
+ *  顺序：百度（中文本地新闻）→ Bing（国际/英文）→ DDG 兜底 */
 async function webSearch(query) {
   const q = query.replace(/\s+/g, " ").trim().slice(0, 120);
-  for (const engine of [searchBing, searchDuckDuckGo]) {
+  for (const engine of [searchBaidu, searchBing, searchDuckDuckGo]) {
     try {
       return await engine(q);
     } catch {
@@ -181,6 +235,89 @@ async function webSearch(query) {
     }
   }
   throw makeError("联网搜索不可用", "SEARCH_ERROR");
+}
+
+// ---------- 多角度检索（v0.5：解决长推文/含年份的查询被无关结果淹没） ----------
+
+/** 提取推文中的关键实体（公司/人名/事件/带引号名字），用于派生更精准的查询 */
+function extractKeyEntities(text) {
+  const ents = [];
+  const push = (s) => {
+    if (s && !ents.includes(s)) ents.push(s);
+  };
+  // 公司/机构：X公司/集团/厂/局/厅/部/医院/学校/大学/中心
+  // 故意排除"所/院"等过宽泛后缀（"看守所/法院/研究院"易误匹配整段短语）
+  const orgs = text.match(/[\u4e00-\u9fa5A-Za-z0-9]{2,12}(?:公司|集团|厂|局|厅|部|医院|学校|大学|中心|党委|党组)/g);
+  if (orgs) orgs.slice(0, 3).forEach(push);
+  // 头衔 + 人：X总/董事长/总经理/书记/局长/情人；X+丈夫/妻子 只取 ≤4 字前缀，避免吞并整句
+  const titles = text.match(/[\u4e00-\u9fa5]{1,3}(?:老总|董事长|总经理|书记|局长|省长|市长|情人|总裁|主席|主任)/g);
+  if (titles) titles.slice(0, 2).forEach(push);
+  const rels = text.match(/[\u4e00-\u9fa5]{1,2}(?:丈夫|妻子)/g);
+  if (rels) rels.slice(0, 1).forEach(push);
+  // 引号内的人名/事件
+  const quoted = text.match(/[「"']([\u4e00-\u9fa5]{2,5})[」"']/g);
+  if (quoted) quoted.slice(0, 2).forEach((s) => push(s.slice(1, -1)));
+  // 事件关键词：X案/事件/事故/大案
+  const events = text.match(/[\u4e00-\u9fa5]{2,8}(?:大案|案件|案发|事件|事故|腐败案|受贿案|脱逃案|劫狱)/g);
+  if (events) events.slice(0, 1).forEach(push);
+  return ents.slice(0, 4);
+}
+
+/** 从推文派生 2-3 个搜索查询，覆盖"全文"+"去年份"+"实体组合"三个角度 */
+function buildSearchQueries(text) {
+  const clean = text.replace(/\s+/g, " ").trim();
+  const queries = [];
+  const seen = new Set();
+  const add = (q) => {
+    const k = q.replace(/\s+/g, " ").trim();
+    if (k && k.length >= 4 && !seen.has(k)) {
+      seen.add(k);
+      queries.push(k);
+    }
+  };
+  // Q1：原文前 60 字（保留最完整的语境）
+  add(clean.slice(0, 60));
+  // Q2：去掉开头的年份/日期前缀（年份会诱导搜索引擎返回"年度大事件"列表）
+  const stripped = clean.replace(/^\s*\d{2,4}\s*年[\d月日,，:：\s]*/, "").slice(0, 60);
+  if (stripped && stripped !== clean.slice(0, 60)) add(stripped);
+  // Q3：实体组合
+  const ents = extractKeyEntities(clean);
+  if (ents.length >= 2) add(ents.join(" "));
+  return queries.slice(0, 3);
+}
+
+/** 命中推文中任一实体的搜索结果视为"相关"；用于给模型可靠性提示 */
+function countRelevantHits(materials, text) {
+  if (!materials || !materials.length) return 0;
+  const ents = extractKeyEntities(text);
+  if (!ents.length) return materials.length; // 提取不出实体时全部视为相关
+  let hits = 0;
+  for (const r of materials) {
+    const blob = ((r.title || "") + " " + (r.snippet || "")).toLowerCase();
+    if (ents.some((e) => blob.includes(e.toLowerCase()))) hits++;
+  }
+  return hits;
+}
+
+/** 多查询汇总去重，返回前 N 条 */
+async function searchMulti(queries) {
+  const all = [];
+  const seen = new Set();
+  for (const q of queries) {
+    try {
+      const res = await webSearch(q);
+      for (const r of res) {
+        if (!seen.has(r.url)) {
+          seen.add(r.url);
+          all.push(r);
+        }
+      }
+      if (all.length >= XR_SEARCH_MAX_RESULTS) break;
+    } catch {
+      /* 单个查询失败不影响其他查询 */
+    }
+  }
+  return all.slice(0, XR_SEARCH_MAX_RESULTS);
 }
 
 // ---------- 配图处理 ----------
@@ -267,14 +404,17 @@ async function checkText(rawText, rawImages) {
     throw makeError("尚未配置 API Key，请先在扩展设置中完成配置", "NO_API_KEY");
   }
 
-  // 联网检索资料（失败不阻塞，降级为纯知识分析）
-  let materials = null;
+  // 联网检索资料（多角度查询；全部失败时降级为纯知识分析）
+  let materials = [];
+  let searchFailed = false;
+  let searchHitEntities = true; // 搜索结果是否与推文核心实体相关
   if (settings.enableSearch) {
-    try {
-      materials = await webSearch(text);
-    } catch {
-      materials = null;
-    }
+    const queries = buildSearchQueries(text);
+    materials = await searchMulti(queries);
+    if (!materials.length) searchFailed = true;
+    else searchHitEntities = countRelevantHits(materials, text) > 0;
+  } else {
+    searchFailed = true;
   }
 
   // 配图：下载转 base64（已知不支持视觉的模型直接跳过）
@@ -294,7 +434,10 @@ async function checkText(rawText, rawImages) {
     }
   }
 
-  const result = await analyzeWithModel(text, settings, materials, imageDataUrls);
+  const result = await analyzeWithModel(text, settings, materials, imageDataUrls, {
+    searchFailed,
+    searchHitEntities,
+  });
   result.searched = !!(settings.enableSearch && materials && materials.length);
   result.imageCount = imageDataUrls.length && !result.skippedImages ? imageDataUrls.length : 0;
   result.skippedImages = result.skippedImages || (imageUrls.length > 0 && result.imageCount === 0);
@@ -304,9 +447,14 @@ async function checkText(rawText, rawImages) {
 }
 
 /** 调用模型分析；带图请求报"不支持图片"类错误时，自动降级重试纯文字 */
-async function analyzeWithModel(text, settings, materials, imageDataUrls) {
+async function analyzeWithModel(text, settings, materials, imageDataUrls, ctx = {}) {
   try {
-    const content = await callLLM(text, settings, { materials, images: imageDataUrls });
+    const content = await callLLM(text, settings, {
+      materials,
+      images: imageDataUrls,
+      searchFailed: ctx.searchFailed,
+      searchHitEntities: ctx.searchHitEntities,
+    });
     return parseVerdict(content);
   } catch (err) {
     const imgNotSupported =
@@ -316,7 +464,12 @@ async function analyzeWithModel(text, settings, materials, imageDataUrls) {
       );
     if (imgNotSupported) {
       // 降级：不带走图重新请求
-      const content = await callLLM(text, settings, { materials, images: [] });
+      const content = await callLLM(text, settings, {
+        materials,
+        images: [],
+        searchFailed: ctx.searchFailed,
+        searchHitEntities: ctx.searchHitEntities,
+      });
       const result = parseVerdict(content);
       result.skippedImages = true;
       // 记录该模型不支持视觉，避免下次重复报错
@@ -450,10 +603,17 @@ async function callLLM(text, settings, opts = {}) {
     const lines = opts.materials.map(
       (r, i) => `[${i + 1}] ${r.title}\n${r.snippet || "（无摘要）"}\n来源：${hostOf(r.url) || r.url}`
     );
+    const relevanceHint = opts.searchHitEntities
+      ? ""
+      : "\n（⚠️ 提示：以下搜索资料均未命中推文中的核心人名/公司/事件，请勿据此否定推文事实，优先依据自身知识判断）";
     textPart =
       `【待核查推文】\n${text}\n\n` +
-      `【网络搜索资料】（共 ${lines.length} 条，供参考，请自行甄别可信度与相关性）\n` +
+      `【网络搜索资料】（多角度查询汇总，共 ${lines.length} 条，供参考，请自行甄别可信度与相关性）${relevanceHint}\n` +
       lines.join("\n\n");
+  } else if (opts.searchFailed) {
+    textPart =
+      `【待核查推文】\n${text}\n\n` +
+      `【说明】联网搜索当前不可用（可能受网络限制）。请完全基于自身知识判断；超出知识范围时判 suspected，不要凭印象猜 rumor。`;
   }
   if (opts.images && opts.images.length) {
     textPart += `\n\n（本消息附有 ${opts.images.length} 张推文配图，请按系统指令结合图片内容分析）`;
