@@ -14,9 +14,11 @@
 | `shared/providers.js` | 服务商预设 + 多模态静态识别 |
 | `popup/` | 工具栏弹窗：手动文本检查 + 历史 |
 | `options/` | 设置页：预设 / 模型拉取 / 多模态实测 / 配置概览仪表盘 |
-| `tools/generate_icons.py` | 图标生成（无第三方依赖） |
+| `tools/generate_icons.py` | 程序化绘制图标（纯标准库，旧方案） |
+| `tools/build_icons.py` | 从 `icons/source-logo.jpg` 生成图标集（需 Pillow；`SHAPE = "circle"` 圆形为当前方案） |
+| `icons/` | 扩展图标（16/32/48/128）+ `source-logo.jpg` 设计稿源文件 |
 
-改判定逻辑 → `service-worker.js`；改卡片展示 → `shared/ui.js`（注意 popup 也用它）。
+改判定逻辑 → `service-worker.js`；改卡片展示 → `shared/ui.js`（注意 popup 也用它）；改图标 → 改设计稿后跑 `tools/build_icons.py`。
 
 ## 关键设计决策
 
@@ -29,9 +31,17 @@
 - **谣言复核关**（`XR_VERIFY_PROMPT`）：搜索失败时判 rumor 必须复核，模型给不出「确切的矛盾事实」就降级 suspected。
 - 搜索失败路径允许模型用「确切知识为假（含常识）」判 rumor，但不允许「没听说过」式判定。
 
-### 2. 搜索：并行竞速 + 收集窗口
+### 2. 搜索：偏好引擎优先 + 竞速兜底 + 按权重合并
 
-`webSearch` 四引擎（Google/Bing/DDG/百度）**并行发起**，`Promise.any` 等首个成功，再等 1.5s（`XR_COLLECT_WINDOW`）收集其余引擎结果合并。失败引擎进 30 分钟冷却（内存 Map，SW 重启即清空，属预期）。
+`webSearch` 四引擎（Google/Bing/DDG/百度）**始终并行发起**，收口规则分三档：
+
+1. 偏好引擎（`XR_ENGINE_META.preferred`，当前为 Google）在可用集合中：自发起时刻起最多等它 `XR_PREFERRED_WAIT`（1.5s 绝对窗口）；它明确失败则立即回落，不空等。
+2. 偏好引擎超时/失败：回落到纯竞速 —— `Promise.any` 等首个成功，再等 `XR_COLLECT_WINDOW`（1.5s）收集其余引擎结果；偏好引擎胜出时只等 `XR_PREFERRED_COLLECT`（0.4s，其余结果多半已在途）。
+3. 偏好引擎不在可用集合（未授权 / 冷却中）：直接竞速，零额外等待。
+
+合并阶段 `searchMulti` 按**引擎可信度权重**排序（`XR_ENGINE_META.weight`：Google 100 > Bing 70 > DDG 60 > 百度 40），同权重再按查询顺序（原文 → 去年份 → 实体组合），最后 URL 去重并截断到 `XR_SEARCH_MAX_RESULTS`（12 条）。**不按返回先后排序**——那会让先到的引擎吃满名额、权威信源被截断。
+
+引擎健康度落地在 `chrome.storage.local` 的 `xrEngineHealth`（失败引擎 30 分钟冷却）。**不要再退回纯内存 Map**：MV3 的 SW 空闲 30s 即回收，内存记录丢失会让被墙引擎每次核查都被重新探测、重复白等超时（实测 Google/DDG 各 7s）。
 
 > 不要改回串行降级——那是「查询慢」的根因之一。
 
@@ -56,11 +66,13 @@ content （操作栏按钮 + 配图提取）
    │ chrome.runtime.sendMessage({type:"CHECK"})
    ▼
 service-worker
-   ① webSearch 四引擎并行竞速  ──► 汇总去重资料
-   ② 组装 text + 配图 + 资料   ──► 调 OpenAI 兼容 /chat/completions
+   ① 检索与配图**并行**（两条独立的 I/O 链，不要改回串行）
+        · webSearch 四引擎并行 + 偏好优先 → searchMulti 按权重合并
+        · 配图并行下载 + 压缩
+   ② 组装 text + 配图 + 资料   ──► 调 OpenAI 兼容 /chat/completions（45s 超时上限）
    ③ parseVerdict 容错解析 JSON（剥离 ```json 围栏）
-   ④ 谣言复核关（搜索失败 + 初判 rumor 时）
-   ⑤ 写历史 + 结果缓存
+   ④ 谣言复核关（**本次未取到资料** + 初判 rumor 时）
+   ⑤ 写历史 + 结果缓存 + 分段耗时（result.timing）
    │ sendResponse
    ▼
 content 渲染卡片（shared/ui.js 的 xrBuildCard）

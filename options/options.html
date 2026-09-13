@@ -39,10 +39,6 @@
       <span class="stat-key">联网搜索</span>
       <span id="ovSearch" class="pill st-on">开启</span>
     </div>
-    <div class="stat">
-      <span class="stat-key">图片理解</span>
-      <span id="ovVision" class="pill st-neu">未配置</span>
-    </div>
   </section>
 
   <!-- 第 01 步：选择服务商 -->
@@ -55,6 +51,7 @@
       </div>
     </header>
     <div id="presetGrid" class="preset-grid"></div>
+    <button id="presetToggle" type="button" class="preset-toggle hidden">展开更多服务商</button>
   </section>
 
   <!-- 第 02 步：连接模型 -->
@@ -63,7 +60,7 @@
       <span class="step-no">02</span>
       <div class="sec-title">
         <h2>连接模型</h2>
-        <p>接口 · Key · 模型 · 多模态能力，全部 OpenAI 兼容</p>
+        <p>接口 · Key · 模型，全部 OpenAI 兼容</p>
       </div>
     </header>
 
@@ -81,10 +78,9 @@
         <button id="toggleKey" type="button" class="ghost-btn small">显示</button>
         <a id="keyLink" class="mini-link" target="_blank" rel="noopener noreferrer">获取 Key ↗</a>
       </div>
-      <p class="hint">仅保存在浏览器本地（chrome.storage.sync），不上传任何第三方</p>
     </div>
 
-    <div class="field">
+    <div class="field field-inline">
       <label class="field-label" for="optModel">模型</label>
       <div class="input-row">
         <div class="model-box">
@@ -99,7 +95,7 @@
         <button id="fetchModels" type="button" class="ghost-btn">拉取模型列表</button>
       </div>
       <div id="modelChips" class="chips"></div>
-      <p class="hint" id="fetchHint">「拉取模型列表」从 /models 接口获取可用模型；失败时可直接输入，或点击常用模型</p>
+      <p class="hint" id="fetchHint"></p>
     </div>
 
     <div class="field">
@@ -113,26 +109,6 @@
           <span class="switch-desc">核查时自动检索相关报道与辟谣信息，结合资料给出结论</span>
         </div>
       </div>
-      <p class="hint">Google · Bing · DuckDuckGo · 百度 四引擎并行检索，无需额外 Key；点击「保存设置」时统一完成网络授权</p>
-    </div>
-
-    <div class="field">
-      <span class="field-label">图片理解 <em class="opt">可选</em></span>
-      <div class="cap-row">
-        <span id="capBadge" class="cap-badge unknown">❓ 未知</span>
-        <button id="testVision" type="button" class="ghost-btn small">实测检测</button>
-        <span id="capNote" class="cap-note"></span>
-      </div>
-      <p class="hint">静态识别即时显示；「实测检测」发送 1×1 测试图片验证，结果按模型缓存。纯文本模型同样可用——不支持图片时自动降级纯文字分析，不影响判定</p>
-    </div>
-  </section>
-
-  <!-- 隐私说明 -->
-  <section class="priv-note">
-    <span class="priv-dot"></span>
-    <div>
-      <b>本地优先 · 无自有服务器</b>
-      <p>Key 与配置仅存浏览器，网络请求只在「用户主动点击检查」时发生，扩展内无任何统计与追踪。</p>
     </div>
   </section>
 
@@ -143,6 +119,12 @@
     <span id="dirtyHint" class="dirty-hint hidden">● 有未保存的更改</span>
     <span id="testResult" class="test-result"></span>
   </div>
+
+  <!-- 隐私说明（置于保存下方的小字） -->
+  <p class="priv-line">
+    <span class="priv-dot"></span>
+    本地优先 · 无自有服务器 —— Key 与配置仅存浏览器，网络请求只在点击「检查」时发生
+  </p>
 
   <details class="tip">
     <summary>使用提示</summary>

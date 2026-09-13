@@ -1,7 +1,7 @@
-// X-Really options（v0.2）：
-// 1) 服务商预设卡片（一键填充 baseUrl + 推荐模型）
-// 2) 模型拉取（OpenAI 兼容 /models，参考 cc-switch），带搜索下拉与本地缓存
-// 3) 多模态能力检测（静态命名识别 + 1x1 图片实测，结果按模型缓存）
+// X-Really options：
+// 1) 服务商预设卡片（默认展示 DeepSeek / OpenAI / 智谱 GLM，其余折叠）
+// 2) 模型拉取（OpenAI 兼容 /models），带搜索下拉与本地缓存
+// 3) 图片理解不再有独立 UI：后台核查时自动探测（支持则用图，不支持自动降级纯文字）
 
 const XR_DEFAULTS = {
   baseUrl: "https://api.openai.com/v1",
@@ -10,7 +10,6 @@ const XR_DEFAULTS = {
   enableSearch: true,
 };
 const XR_MODEL_CACHE_KEY = "xrModelCache"; // { [cacheKey]: { ts, models } }
-const XR_CAPS_CACHE_KEY = "xrCaps"; // { [model]: { vision, note, ts } }
 const XR_CACHE_TTL = 24 * 3600 * 1000;
 
 // ---------- 可选主机权限（必需权限仅 x.com，其余域在用户手势中按需申请） ----------
@@ -89,15 +88,24 @@ function setTestResult(text, cls) {
 // ---------- 服务商预设 ----------
 
 let currentProviderId = "custom";
+// 默认只展示这三个 + 当前选中的服务商，其余折叠到「展开更多服务商」里
+const XR_PRESET_VISIBLE = ["deepseek", "openai", "zhipu"];
+let presetsExpanded = false;
 
 function renderPresetGrid() {
   const grid = $("presetGrid");
   grid.innerHTML = "";
+  let extraCount = 0;
   for (const p of XR_PROVIDERS) {
+    const isExtra = !XR_PRESET_VISIBLE.includes(p.id) && p.id !== currentProviderId;
+    if (isExtra) extraCount++;
+
     const card = document.createElement("button");
     card.type = "button";
     card.className = "preset" + (p.id === currentProviderId ? " active" : "");
     card.dataset.id = p.id;
+    if (isExtra) card.classList.add("extra");
+    if (isExtra && !presetsExpanded) card.classList.add("hidden");
     card.innerHTML = `
       <div class="preset-top">
         <span class="preset-logo" style="background:${p.accent}">${xrEscapeHtml(p.name[0] || "?")}</span>
@@ -110,6 +118,14 @@ function renderPresetGrid() {
     card.addEventListener("click", () => applyPreset(p));
     grid.appendChild(card);
   }
+
+  const toggle = $("presetToggle");
+  if (extraCount) {
+    toggle.classList.remove("hidden");
+    toggle.textContent = presetsExpanded ? "收起更多服务商" : `展开更多服务商（${extraCount}）`;
+  } else {
+    toggle.classList.add("hidden");
+  }
 }
 
 function applyPreset(p) {
@@ -120,7 +136,6 @@ function applyPreset(p) {
   renderPresetGrid();
   renderChips(p);
   updateKeyLink(p);
-  updateCapBadge(); // 切换模型后同步刷新静态能力识别
   updateOverview();
   markDirty();
 }
@@ -135,7 +150,6 @@ function renderChips(p) {
     chip.textContent = m;
     chip.addEventListener("click", () => {
       $("optModel").value = m;
-      updateCapBadge();
       updateOverview();
       markDirty();
     });
@@ -257,7 +271,6 @@ function renderModelList(filter) {
       e.preventDefault(); // 避免输入框失焦
       $("optModel").value = item.name;
       closeDrop();
-      updateCapBadge();
       updateOverview();
       markDirty();
     });
@@ -282,86 +295,8 @@ function closeDrop() {
   $("modelDrop").classList.add("hidden");
 }
 
-// ---------- 多模态能力检测 ----------
-
-const CAP_LABELS = { yes: "✅ 支持多模态", no: "🚫 不支持图片", unknown: "❓ 未知" };
-
-async function updateCapBadge() {
-  const model = $("optModel").value.trim();
-  const badge = $("capBadge");
-  const note = $("capNote");
-
-  if (!model) {
-    badge.className = "cap-badge unknown";
-    badge.textContent = "❓ 未知";
-    note.textContent = "请先填写模型名称";
-    return;
-  }
-
-  // 优先使用实测缓存
-  const stored = await chrome.storage.local.get(XR_CAPS_CACHE_KEY);
-  const tested = (stored[XR_CAPS_CACHE_KEY] || {})[model];
-  const stat = xrDetectVisionStatic(model);
-
-  if (tested) {
-    badge.className = "cap-badge " + tested.vision;
-    badge.textContent = CAP_LABELS[tested.vision];
-    note.textContent = `实测于 ${new Date(tested.ts).toLocaleString("zh-CN")}`;
-    return;
-  }
-
-  badge.className = "cap-badge " + stat;
-  badge.textContent = CAP_LABELS[stat];
-  note.textContent =
-    stat === "yes" ? "根据模型命名识别" : stat === "no" ? "根据模型命名识别" : "命名无法识别，可实测检测";
-}
-
-async function runVisionTest() {
-  const btn = $("testVision");
-  const note = $("capNote");
-
-  // 先保存再实测
-  const s = collectSettings();
-  await chrome.storage.sync.set(s);
-
-  // 实测走接口域名，先确保已授权（点击即手势）
-  if (!(await ensureHostPermissions(s))) {
-    note.textContent = "未授予接口访问权限，无法实测";
-    return;
-  }
-
-  btn.disabled = true;
-  note.textContent = "正在发送测试图片…";
-
-  let resp;
-  try {
-    resp = await chrome.runtime.sendMessage({ type: "TEST_VISION" });
-  } catch {
-    resp = { ok: false, error: "扩展通信失败" };
-  }
-  btn.disabled = false;
-
-  if (resp && resp.ok) {
-    const { vision, note: n } = resp.info;
-    const badge = $("capBadge");
-    badge.className = "cap-badge " + vision;
-    badge.textContent = CAP_LABELS[vision];
-    note.textContent = n || "";
-
-    // 按模型缓存实测结果
-    const model = $("optModel").value.trim();
-    if (model) {
-      const stored = await chrome.storage.local.get(XR_CAPS_CACHE_KEY);
-      const caps = stored[XR_CAPS_CACHE_KEY] || {};
-      caps[model] = { vision, note: n, ts: Date.now() };
-      await chrome.storage.local.set({ [XR_CAPS_CACHE_KEY]: caps });
-    }
-  } else {
-    note.textContent = "❌ " + ((resp && resp.error) || "检测失败");
-  }
-}
-
 // ---------- 配置概览（顶部仪表盘） ----------
+// 说明：图片理解的检测 UI 已移除，能力由后台在核查时自动探测（支持则用图、不支持自动降级纯文字）。
 
 async function updateOverview() {
   const baseUrl = $("optBaseUrl").value.trim();
@@ -379,18 +314,6 @@ async function updateOverview() {
   const ovSearch = $("ovSearch");
   ovSearch.textContent = search ? "开启" : "已关";
   ovSearch.className = "pill " + (search ? "st-on" : "st-off");
-
-  // 图片理解：优先实测缓存，其次静态识别
-  let vision = xrDetectVisionStatic(model);
-  if (model) {
-    const stored = await chrome.storage.local.get(XR_CAPS_CACHE_KEY);
-    const tested = (stored[XR_CAPS_CACHE_KEY] || {})[model];
-    if (tested) vision = tested.vision;
-  }
-  const ovVision = $("ovVision");
-  const map = { yes: "st-yes", no: "st-no", unknown: "st-neu" };
-  ovVision.textContent = vision === "yes" ? "支持" : vision === "no" ? "不支持" : "未配置";
-  ovVision.className = "pill " + map[vision];
 }
 
 // ---------- 读取 / 保存 / 测试连接 ----------
@@ -408,32 +331,7 @@ async function loadSettings() {
   renderPresetGrid();
   renderChips(p || XR_PROVIDERS[XR_PROVIDERS.length - 1]);
   updateKeyLink(p);
-  updateCapBadge();
   updateOverview();
-}
-
-/**
- * 多模态能力提示（**不拦截保存**）：仅给出建议信息。
- * 推理能力优先——纯文本模型（如 deepseek-chat）往往比弱视觉模型判断更准，
- * 不支持图片时插件会自动降级为纯文字分析，不影响使用。
- * @returns {{note?:string}}
- */
-async function probeVisionNote(s) {
-  const staticV = xrDetectVisionStatic(s.model);
-  if (staticV === "no") {
-    return {
-      note: `ℹ️ ${s.model} 可能是纯文本模型（不支持图片）。图文推文将只分析文字部分，判定通常依然可靠`,
-    };
-  }
-
-  // 已有实测缓存：直接提示
-  const stored = await chrome.storage.local.get(XR_CAPS_CACHE_KEY);
-  const cached = (stored[XR_CAPS_CACHE_KEY] || {})[s.model];
-  if (cached && cached.vision === "yes") return {};
-  if (cached && cached.vision === "no") {
-    return { note: `ℹ️ ${s.model} 不支持图片输入，图文推文将只分析文字部分` };
-  }
-  return {}; // 未知能力：不打扰用户，分析时自动探测
 }
 
 async function save() {
@@ -444,21 +342,15 @@ async function save() {
   btn.disabled = true;
   btn.innerHTML = '<span class="xr-spin"></span> 保存中…';
 
-  let hint;
-  try {
-    hint = await probeVisionNote(s);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = idle;
-  }
-
   await chrome.storage.sync.set({ ...s, provider: currentProviderId });
   $("dirtyHint").classList.add("hidden");
-  updateCapBadge();
   updateOverview();
 
   // 保存即授权：为接口地址 + 搜索引擎 + 配图域申请可选权限（已授权则静默通过）
   const granted = await ensureHostPermissions(s);
+  btn.disabled = false;
+  btn.textContent = idle;
+
   if (!granted) {
     setTestResult(
       "⚠️ 已保存，但未授予网络访问权限：AI 调用与联网核查将不可用。重新点击「保存设置」可再次授权",
@@ -468,13 +360,8 @@ async function save() {
     return;
   }
 
-  if (hint.note) {
-    setTestResult(hint.note, "info");
-    showToast("✅ 已保存（纯文字模式）");
-  } else {
-    setTestResult("✅ 保存成功", "ok");
-    showToast("✅ 已保存");
-  }
+  setTestResult("✅ 保存成功", "ok");
+  showToast("✅ 已保存");
 }
 
 async function testConnection() {
@@ -520,7 +407,10 @@ $("verBadge").textContent = "v" + chrome.runtime.getManifest().version;
 $("saveBtn").addEventListener("click", save);
 $("testBtn").addEventListener("click", testConnection);
 $("fetchModels").addEventListener("click", fetchModels);
-$("testVision").addEventListener("click", runVisionTest);
+$("presetToggle").addEventListener("click", () => {
+  presetsExpanded = !presetsExpanded;
+  renderPresetGrid();
+});
 
 $("toggleKey").addEventListener("click", () => {
   const input = $("optApiKey");
@@ -533,7 +423,6 @@ $("toggleKey").addEventListener("click", () => {
 $("optModel").addEventListener("focus", openDrop);
 $("optModel").addEventListener("input", () => {
   openDrop();
-  updateCapBadge();
   updateOverview();
   markDirty();
 });

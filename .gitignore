@@ -146,5 +146,7 @@ vite.config.ts.timestamp-*
 .vite/
 
 # Chrome Web Store 发布产物
-_release/
+# 注意：打包暂存目录必须放在 .workbuddy/release（点开头），切勿放在项目根目录用 "_" 前缀命名——
+# Chrome「加载已解压的扩展程序」会拒绝任何以 _ 开头的文件/目录名（报 Cannot load extension with
+# file or directory name _xxx）。根目录下遗留一个 _release/ 就会导致整个扩展装不上。
 x-really-v*.zip

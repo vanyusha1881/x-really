@@ -19,7 +19,10 @@ shared/providers.js       # 服务商预设 + 多模态静态识别
 popup/                   # 工具栏弹窗：手动文本检查 + 历史
 options/                 # 设置页：API 配置 / 模型拉取 / 多模态实测
 tools/generate_icons.py  # 程序化绘制图标（纯标准库，旧盾牌方案，留作参考）
-tools/build_icons.py     # 从 icons/source-logo.jpg 生成图标集（需 Pillow：抠图 + 多尺寸锐化 + 小尺寸主体放大）
+tools/build_icons.py     # 从 icons/source-logo.jpg 生成图标集（需 Pillow：抠图 + 形态裁切 + 多尺寸锐化）
+                         #   SHAPE = "circle"（当前，圆形）| "rounded"（旧圆角方形，轮廓与原设计一致）
+                         #   圆形方案按尺寸分档内缩：CIRCLE_PLAN = {128:0.90, 48:0.90, 32:1.00, 16:1.06}
+                         #   （直接圆裁会切掉卡片左下角与底部互动图标，故大尺寸留边、小尺寸放大）
                          #   改设计稿后：python tools/build_icons.py 重新生成 icon16/32/48/128 + icon.png
                          #   注意：icons/icon.png 与 source-logo.jpg 仅作源文件，不打进商店 zip
 ```
@@ -37,10 +40,27 @@ tools/build_icons.py     # 从 icons/source-logo.jpg 生成图标集（需 Pillo
 - 谣言复核关（`XR_VERIFY_PROMPT`）：搜索失败时判 rumor 必须复核，模型给不出"确切的矛盾事实"就降级 suspected。保留此机制。
 - 搜索失败路径允许模型用"确切知识为假（含常识）"判 rumor，但不允许"没听说过"式判定。
 
-### 2. 搜索：并行竞速 + 收集窗口
+### 2. 搜索：偏好引擎优先 + 竞速兜底 + 按权重合并
 
-`webSearch` 四引擎（Google/Bing/DDG/百度）**并行发起**，`Promise.any` 等首个成功，再等 1.5s（`XR_COLLECT_WINDOW`）收集其余引擎结果合并。失败引擎进 30 分钟冷却（内存 Map，SW 重启即清空，属预期）。
+`webSearch` 四引擎（Google/Bing/DDG/百度）**始终并行发起**，收口分三档：
+
+1. 偏好引擎（`XR_ENGINE_META.preferred`，当前 Google）可用时：自发起时刻起最多等 `XR_PREFERRED_WAIT`（1.5s 绝对窗口）；它明确失败立即回落，不空等。
+2. 超时/失败 → 回落纯竞速：`Promise.any` 首个成功 + `XR_COLLECT_WINDOW`（1.5s）收集窗口；偏好引擎胜出时只等 `XR_PREFERRED_COLLECT`（0.4s）。
+3. 偏好引擎不可用（未授权 / 冷却中）→ 直接竞速，零额外等待。
+
+合并由 `searchMulti` 完成：按**引擎可信度权重**排序（Google 100 > Bing 70 > DDG 60 > 百度 40），同权重按查询顺序（原文 → 去年份 → 实体组合），再 URL 去重、截断到 `XR_SEARCH_MAX_RESULTS`（12 条）。**不要按返回先后排序**——先到的引擎会吃满名额，权威信源反被截断。
+
+引擎健康度落地 `chrome.storage.local` 的 `xrEngineHealth`（失败 30 分钟冷却）。**不要退回纯内存 Map**：MV3 SW 空闲 30s 即回收，记录丢失会让被墙引擎每次核查都重新探测、重复白等 7s。
+
 不要改回串行降级——那是"查询慢"的根因之一。
+
+### 2.1 检索与配图必须并行
+
+`checkText` 里检索（`searchTask`）与配图（`imageTask`）是两条互不依赖的 I/O 链，用 `Promise.all` 并行。**不要改回"先 await 搜索、再下载配图"的串行写法**（白等一段）。
+
+### 2.2 模型调用必须有超时上限
+
+`callLLM` 用 `AbortController` + `XR_LLM_TIMEOUT`（45s）包住"请求 + 重试 + 读响应"，超时转 `TIMEOUT` 错误。**不要去掉**：没有上限时接口卡住会表现为"永远转圈"。
 
 ### 3. 解析搜索引擎 HTML 用正则，不引依赖
 
@@ -60,7 +80,7 @@ tools/build_icons.py     # 从 icons/source-logo.jpg 生成图标集（需 Pillo
 
 - **任何密钥/凭据不得写入仓库文件**（历史已验证干净，保持）。配置只存在于浏览器 storage。
 - 新增网络请求仅限"用户主动点击检查"时触发；不要加遥测/统计。
-- `host_permissions` 已是 `https://*/*`，无需扩权。
+- 权限面保持最小：必需 `host_permissions` 仅 `https://x.com/*`；接口域名 / 搜索引擎 / `pbs.twimg.com` 一律走 `optional_host_permissions`，只在用户手势（设置页保存/测试/拉取/实测）中申请，不要塞回必需权限。
 
 ## 兼容性约束
 
@@ -68,6 +88,14 @@ tools/build_icons.py     # 从 icons/source-logo.jpg 生成图标集（需 Pillo
 - `response_format: {type:"json_object"}` 只在非 `maxTokens` 场景启用，且必须保留 400/相关报错时自动去掉重试的降级路径（部分中转不支持）。
 - 本地服务（Ollama）允许无 API Key（`requireEndpoint` 里的 localhost 判断）。
 - 判定输出是 JSON 但要容错解析（`parseVerdict` 会剥 ```json 围栏），因为不是所有模型都守规矩。
+
+## 本地加载与打包（踩过的坑）
+
+- 开发时「加载已解压的扩展程序」指向**项目根目录**，因此根目录（及所有子目录）里**不能有任何以 `_` 开头的文件或目录名**——Chrome 会直接报 `Cannot load extension with file or directory name _xxx` 并拒绝加载。
+- 打包暂存目录一律放 `.workbuddy/release/`（点开头，Chrome 忽略，且已在 .gitignore）。**不要**在项目根建 `_release/` 之类的目录。
+- 验证扩展目录是否合法（走与"加载已解压扩展"相同的校验）：
+  `chrome.exe --pack-extension="<目录>"` —— 返回码 0 且生成 `.crx` 即通过。
+- 商店包（`x-really-v*.zip`）放在根目录无妨（Chrome 只对 `_` 前缀敏感），需保证 manifest.json 在 zip 根。
 
 ## 提交与版本规范
 

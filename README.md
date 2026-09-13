@@ -22,7 +22,7 @@ git clone https://github.com/vanyusha1881/x-really.git
 
 ## 🧠 工作原理
 
-点检查 → ① 四引擎（Google / Bing / DDG / 百度）并行搜索 + 抓取推文配图（≤4 张）→ ② 文本、资料、配图一并交给你配置的 AI → ③ 输出结构化 JSON 判定 → ④ 卡片展示。
+点检查 → ① 四引擎（Google / Bing / DDG / 百度）并行搜索（Google 优先，结果按信源权重合并）+ 并行抓取推文配图（≤4 张）→ ② 文本、资料、配图一并交给你配置的 AI → ③ 输出结构化 JSON 判定 → ④ 卡片展示。
 
 - **判定三档**：`谣言` / `不是谣言` / `存疑`（禁止用「存疑」回避结论）
 - **双向防误判**：无媒体报道 ≠ 谣言；表述可信 ≠ 事实
@@ -40,9 +40,10 @@ x-really/
 ├── manifest.json              # MV3 清单
 ├── README.md · LICENSE · privacy.html
 ├── docs/                      # ARCHITECTURE.md · CHANGELOG.md
-├── icons/                     # 扩展图标（16/48/128）
-├── tools/generate_icons.py    # 图标生成脚本（无依赖）
-├── background/service-worker.js  # 搜索竞速 / AI 调用 / 解析 / 历史 / 能力实测
+├── icons/                     # 扩展图标（16/32/48/128，圆形）+ source-logo.jpg 设计稿
+├── tools/generate_icons.py    # 程序化绘制图标（纯标准库，旧方案）
+├── tools/build_icons.py       # 从设计稿生成图标集（需 Pillow：抠图 + 圆形裁切 + 多尺寸锐化）
+├── background/service-worker.js  # 检索调度（引擎优先级/权重合并）/ AI 调用 / 解析 / 历史 / 能力实测
 ├── content/                   # X 页面：操作栏按钮 + 结果卡片
 ├── popup/                     # 手动检查 + 历史
 ├── options/                   # 设置页（预设 / 模型拉取 / 能力检测）

@@ -5,17 +5,17 @@
 #
 # 与 tools/generate_icons.py 的区别：
 #   generate_icons.py  纯标准库、程序化绘制（旧盾牌方案，保留作参考）
-#   build_icons.py     处理位图设计稿——抠出圆角方形轮廓 + 多尺寸锐化（本方案）
+#   build_icons.py     处理位图设计稿——抠图 + 形态裁切 + 多尺寸锐化（当前方案）
 #
 # 依赖：Pillow（仅构建图标时需要，扩展本身零依赖，不影响发布包）
 #   python -m venv .venv && .venv\Scripts\pip install pillow
 #
 # 关键处理（为什么需要）：
 #   1. 设计稿四周是白底 + 灰色投影。直接缩放会让暗色工具栏出现白角/灰晕，
-#      故用「低饱和度泛洪填充」从画布边缘吞掉白色与投影，止于饱和的蓝色边缘，
-#      得到透明外角；不靠猜圆角半径，轮廓与原设计完全一致。
-#   2. 主体元素多（卡片/头像/X/印章/放大镜/机器人），16px 直接缩放会糊成一团。
-#      故小尺寸按系数放大主体（crop 外围留白后放大），16px 用 1.42、32/48px 用 1.16。
+#      故用「低饱和度泛洪填充」从画布边缘吞掉白色与投影，止于饱和的蓝色边缘。
+#   2. 形态默认用「圆形」（SHAPE = circle）：Chrome 列表/工具栏里圆形更贴合系统观感。
+#      圆形裁切会切掉四角，若直接裁会把卡片左下角与底部互动图标切掉，故先把主体按
+#      inner_scale 缩进圆形内（大尺寸留边 = 徽章观感；小尺寸放大 = 补回主体尺寸）。
 #   3. 缩小前后各做一次 UnsharpMask，抵消重采样带来的软化。
 
 import os
@@ -24,8 +24,13 @@ from collections import deque
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
-# 各尺寸的"主体放大系数"：1.0 = 完整构图（保留四周留白）
-PLAN = {16: 1.42, 32: 1.16, 48: 1.16, 128: 1.0}
+SHAPE = "circle"  # "circle"（当前）| "rounded"（旧圆角方形，轮廓与原设计一致）
+
+# 圆形方案：各尺寸的主体缩放比（1.0 = 铺满画布，四角会裁掉一部分）
+CIRCLE_PLAN = {128: 0.90, 48: 0.90, 32: 1.00, 16: 1.06}
+# 圆角方形方案（保留，便于随时切回）：按裁掉外围留白来放大主体
+ROUNDED_PLAN = {16: 1.42, 32: 1.16, 48: 1.16, 128: 1.0}
+
 MASTER = 1024          # 母版尺寸（同时作为 icons/icon.png 源文件）
 LOW_SAT_TOL = 28       # 判定"背景"的饱和度阈值（max-min of RGB）
 MATTE_BLUR = 0.7       # 抠图边缘柔化半径
@@ -77,7 +82,7 @@ def cut_out(im):
 
 
 def measure(im):
-    """量出蓝色本体的包围盒与圆角半径（用于方形裁切与遮罩）"""
+    """量出蓝色本体的包围盒与圆角半径（方形裁切与圆角遮罩用）"""
     w, h = im.size
     px = im.load()
     xs, ys = [], []
@@ -101,6 +106,12 @@ def measure(im):
     return box, side, radius
 
 
+def circle_mask(size, ss=4):
+    m = Image.new("L", (size * ss, size * ss), 0)
+    ImageDraw.Draw(m).ellipse([0, 0, size * ss - 1, size * ss - 1], fill=255)
+    return m.resize((size, size), Image.LANCZOS)
+
+
 def rounded_mask(size, r, ss=4):
     m = Image.new("L", (size * ss, size * ss), 0)
     ImageDraw.Draw(m).rounded_rectangle([0, 0, size * ss - 1, size * ss - 1], radius=r * ss, fill=255)
@@ -111,19 +122,45 @@ def build(src, out_dir):
     im = Image.open(src).convert("RGB")
     art = cut_out(im)
     box, side, radius = measure(im)
-
-    # 母版：方形裁切 + 透明圆角
-    master = art.crop(box).resize((MASTER, MASTER), Image.LANCZOS).filter(ImageFilter.UnsharpMask(**SHARPEN))
-    mr = int(radius / side * MASTER)
-    master.putalpha(ImageChops.multiply(master.getchannel("A"), rounded_mask(MASTER, mr)))
+    art_sq = art.crop(box)  # 只留蓝色本体（方形）
 
     os.makedirs(out_dir, exist_ok=True)
+    master_r = int(radius / side * MASTER)
+
+    if SHAPE == "circle":
+        # 母版
+        master = art_sq.resize((MASTER, MASTER), Image.LANCZOS).filter(ImageFilter.UnsharpMask(**SHARPEN))
+        master.putalpha(circle_mask(MASTER))
+        master.save(os.path.join(out_dir, "icon.png"))
+
+        for size, inner in CIRCLE_PLAN.items():
+            base = art_sq.resize((size, size), Image.LANCZOS)
+            if inner != 1.0:
+                n = max(1, int(round(size * inner)))
+                canvas = base.copy()  # 以同底色打底，避免缩放后出现接缝
+                canvas.alpha_composite(
+                    art_sq.resize((n, n), Image.LANCZOS), ((size - n) // 2, (size - n) // 2)
+                )
+                base = canvas
+            img = base.filter(ImageFilter.UnsharpMask(radius=1.2, percent=40, threshold=2)) if size <= 128 else base
+            img = img.copy()
+            img.putalpha(
+                Image.composite(img.getchannel("A"), Image.new("L", (size, size), 0), circle_mask(size))
+            )
+            img.save(os.path.join(out_dir, f"icon{size}.png"))
+            print(f"icon{size}.png  (circle, inner x{inner})")
+        print(f"icon.png  (master {MASTER}, circle)")
+        return
+
+    # ---- "rounded"：保留原设计圆角轮廓（原图与同源遮罩同步裁切缩放）----
+    master = art.crop(box).resize((MASTER, MASTER), Image.LANCZOS).filter(ImageFilter.UnsharpMask(**SHARPEN))
+    master.putalpha(ImageChops.multiply(master.getchannel("A"), rounded_mask(MASTER, master_r)))
     master.save(os.path.join(out_dir, "icon.png"))
-    for size, zoom in PLAN.items():
+
+    for size, zoom in ROUNDED_PLAN.items():
         if zoom == 1.0:
             img = master.resize((size, size), Image.LANCZOS)
         else:
-            # 主体放大：原图与"同源圆角遮罩"同步裁切缩放，轮廓与 128 保持一致
             inset = int(side * (1 - 1 / zoom) / 2)
             rgb = im.crop((box[0] + inset, box[1] + inset, box[2] - inset, box[3] - inset))
             rgb = rgb.filter(ImageFilter.UnsharpMask(radius=1.4, percent=40, threshold=2))
@@ -134,8 +171,8 @@ def build(src, out_dir):
             img.putalpha(m.resize(rgb.size, Image.LANCZOS).filter(ImageFilter.GaussianBlur(0.5)))
             img = img.resize((size, size), Image.LANCZOS)
         img.save(os.path.join(out_dir, f"icon{size}.png"))
-        print(f"icon{size}.png  (zoom x{zoom})")
-    print(f"icon.png  (master {MASTER}, radius {mr})")
+        print(f"icon{size}.png  (rounded, zoom x{zoom})")
+    print(f"icon.png  (master {MASTER}, rounded r={master_r})")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,7 @@
 // X-Really 后台服务：接收检查请求，联网检索资料 + 调用 OpenAI 兼容接口完成谣言核查
+// v1.0.1: 检索调度重做——偏好引擎（Google）优先 + 竞速兜底，结果按引擎可信度权重合并（上限 12 条）；
+//         引擎故障冷却落地 storage（跨 SW 重启保留）；检索与配图并行；模型调用加 45s 超时；
+//         修正谣言复核关条件（原读取尚未赋值的 result.searched，导致所有 rumor 判定都多跑一轮模型）
 // v1.0.0: 首个正式版——必需 host 权限仅 x.com，API/搜索引擎/配图域改为可选权限并按下述门控：
 //         设置页保存时统一申请，后台按权限校验（未授权引擎跳过、API 域缺失给引导性报错）；
 //         本地服务（localhost/127.0.0.1，如 Ollama）允许无 API Key 完成核查
@@ -23,9 +26,12 @@ const XR_RESULT_CACHE_KEY = "xrResultCache"; // { [key]: { ts, result } } 核查
 const XR_RESULT_CACHE_TTL = 30 * 60 * 1000; // 30 分钟内相同内容直接复用
 const XR_RESULT_CACHE_MAX = 50;
 const XR_HISTORY_MAX = 20;
-const XR_SEARCH_TIMEOUT = 7000; // 引擎并行竞速，无需长超时
-const XR_COLLECT_WINDOW = 1500; // 首个引擎成功后，再等 1.5s 收集其他引擎结果（多引擎合并提高覆盖）
-const XR_SEARCH_MAX_RESULTS = 8;
+const XR_LLM_TIMEOUT = 45000; // 单次模型调用上限；无上限时接口卡住会表现为"永远转圈"
+const XR_SEARCH_TIMEOUT = 7000; // 单个引擎请求超时（引擎之间并行竞速，无需长超时）
+const XR_COLLECT_WINDOW = 1500; // 竞速兜底路径：首个引擎成功后，再等 1.5s 收集其他引擎结果
+const XR_PREFERRED_WAIT = 1500; // 偏好引擎（Google）可用时，从发起时刻起最多等它这么久
+const XR_PREFERRED_COLLECT = 400; // 偏好引擎胜出后，短暂并入其他引擎已返回的结果
+const XR_SEARCH_MAX_RESULTS = 12; // 合并后的资料上限（原 8 条常被先返回的引擎吃满，多引擎合并形同虚设）
 const XR_IMAGE_TIMEOUT = 12000;
 const XR_IMAGE_MAX_BYTES = 4.5 * 1024 * 1024;
 const XR_IMAGE_MAX_COUNT = 4; // X 单条推文最多 4 张图，全部纳入分析
@@ -334,19 +340,70 @@ function pushGoogleResult(results, html, from, url, title) {
 }
 
 const XR_SEARCH_ENGINES = [searchGoogle, searchBing, searchDuckDuckGo, searchBaidu];
-// 引擎健康度：失败后 30 分钟内不再尝试（并行竞速下无延迟代价，只省掉无谓请求）
-const XR_ENGINE_TTL = 30 * 60 * 1000;
-const xrEngineDown = new Map();
 
-// ---------- 可选权限门控（v1.0：必需 host 权限仅 x.com，其余域按需授权） ----------
-// 各引擎抓取的来源域；未授权的引擎自动跳过（不计入"故障冷却"，权限恢复后立即可用）
-const XR_ENGINE_ORIGINS = {
-  searchGoogle: "https://www.google.com/*",
-  searchBing: "https://www.bing.com/*",
-  searchDuckDuckGo: "https://html.duckduckgo.com/*",
-  searchBaidu: "https://www.baidu.com/*",
+// ---------- 引擎元数据：来源域 + 可信度权重 + 偏好标记 ----------
+// weight 用于"按引擎可信度排序合并"（权威性越高的信源越靠前，供模型优先参考）
+// preferred 用于"偏好引擎优先、竞速兜底"：优先等它，超时才接受其他引擎结果
+const XR_ENGINE_META = {
+  searchGoogle: { origin: "https://www.google.com/*", weight: 100, preferred: true },
+  searchBing: { origin: "https://www.bing.com/*", weight: 70 },
+  searchDuckDuckGo: { origin: "https://html.duckduckgo.com/*", weight: 60 },
+  searchBaidu: { origin: "https://www.baidu.com/*", weight: 40 },
 };
 const XR_IMAGE_ORIGINS = ["https://pbs.twimg.com/*"];
+
+// 短名（Google/Bing/...）→ 权重，搜索结果里带的就是短名
+const XR_ENGINE_WEIGHT = Object.fromEntries(
+  Object.entries(XR_ENGINE_META).map(([fn, m]) => [fn.replace("search", ""), m.weight])
+);
+function engineWeight(shortName) {
+  return XR_ENGINE_WEIGHT[shortName] || 0;
+}
+
+// ---------- 引擎健康度：失败引擎 30 分钟冷却 ----------
+// 落地到 storage.local：MV3 的 Service Worker 空闲 30s 即被回收，纯内存 Map 会随 SW 重启丢失，
+// 导致不可达引擎（如被墙的 Google/DDG）每次核查都被重新探测、重复白等超时。
+const XR_ENGINE_TTL = 30 * 60 * 1000;
+const XR_ENGINE_HEALTH_KEY = "xrEngineHealth"; // { [engineFnName]: downUntilTs }
+let xrEngineDown = null; // Map<engineFnName, downUntilTs>，懒加载
+
+async function loadEngineHealth() {
+  if (xrEngineDown) return xrEngineDown;
+  xrEngineDown = new Map();
+  try {
+    const stored = await chrome.storage.local.get(XR_ENGINE_HEALTH_KEY);
+    const saved = stored[XR_ENGINE_HEALTH_KEY] || {};
+    const now = Date.now();
+    for (const [name, until] of Object.entries(saved)) {
+      if (typeof until === "number" && until > now) xrEngineDown.set(name, until);
+    }
+  } catch {
+    /* 读失败按"全部健康"处理 */
+  }
+  return xrEngineDown;
+}
+
+function engineAvailable(engine) {
+  const until = xrEngineDown?.get(engine.name);
+  return !until || Date.now() > until;
+}
+
+function markEngineDown(engine) {
+  const until = Date.now() + XR_ENGINE_TTL;
+  xrEngineDown?.set(engine.name, until);
+  // 异步落地，不阻塞当前核查
+  chrome.storage.local
+    .get(XR_ENGINE_HEALTH_KEY)
+    .then((stored) => {
+      const saved = stored[XR_ENGINE_HEALTH_KEY] || {};
+      saved[engine.name] = until;
+      return chrome.storage.local.set({ [XR_ENGINE_HEALTH_KEY]: saved });
+    })
+    .catch(() => {});
+}
+
+// ---------- 可选权限门控（v1.0：必需 host 权限仅 x.com，其余域按需授权） ----------
+// 未授权的引擎自动跳过（不计入"故障冷却"，权限恢复后立即可用）
 
 async function hasOrigins(patterns) {
   try {
@@ -370,15 +427,6 @@ function engineName(engine) {
   return engine.name.replace("search", "");
 }
 
-function engineAvailable(engine) {
-  const until = xrEngineDown.get(engine.name);
-  return !until || Date.now() > until;
-}
-
-function markEngineDown(engine) {
-  xrEngineDown.set(engine.name, Date.now() + XR_ENGINE_TTL);
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -387,13 +435,26 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * - 准确性：多引擎结果合并，资料覆盖远好于"只取第一个成功引擎"
  * - 能否访问 Google 取决于 Chrome 的代理配置（扩展走 Chrome 网络栈），失败自动被并行竞速淘汰
  */
+/**
+ * 四引擎检索：偏好引擎优先、竞速兜底。
+ *
+ * 策略（原为"纯竞速、谁快谁赢"）：
+ * 1. 偏好引擎（Google）在可用集合中时，自发起时刻起最多等它 XR_PREFERRED_WAIT（绝对窗口，
+ *    不受其他引擎快慢影响）；它若明确失败会立即回落，不空等整个窗口。
+ * 2. 偏好引擎超时/失败 → 回落到纯竞速（首个成功即采用 + XR_COLLECT_WINDOW 收集窗口）。
+ * 3. 偏好引擎不在可用集合（未授权 / 冷却中）→ 直接走竞速，不做任何额外等待。
+ * - 所有引擎的请求始终并行发出，等待只影响"何时收口"，不增加串行请求。
+ * - 收集窗口内其他引擎返回的结果一并并入，交由 searchMulti 按权重排序。
+ */
 async function webSearch(query) {
   const q = query.replace(/\s+/g, " ").trim().slice(0, 120);
-  // 健康度 + 可选权限双重过滤：未授权的引擎不发起请求（也不计入故障冷却）
+  await loadEngineHealth();
+
+  // 权限 + 健康度双重过滤：未授权的引擎不发起请求（也不计入故障冷却）
   const permitted = await Promise.all(
     XR_SEARCH_ENGINES.map(async (engine) => {
-      const pattern = XR_ENGINE_ORIGINS[engine.name];
-      return engine && pattern ? await hasOrigins([pattern]) : false;
+      const meta = XR_ENGINE_META[engine.name];
+      return meta ? await hasOrigins([meta.origin]) : false;
     })
   );
   const engines = XR_SEARCH_ENGINES.filter(
@@ -401,29 +462,65 @@ async function webSearch(query) {
   );
   if (!engines.length) throw makeError("联网搜索不可用", "SEARCH_ERROR");
 
-  const settled = [];
-  const tasks = engines.map((engine) =>
-    engine(q).then(
+  const resultsByEngine = new Map(); // 短名 -> 结果数组（仅成功时写入）
+  const taskByEngine = new Map(); // 引擎名 -> Promise<boolean>（成功 true / 失败 false，永不 reject）
+  for (const engine of engines) {
+    const task = engine(q).then(
       (rs) => {
-        settled.push(...rs.map((r) => ({ ...r, engine: engineName(engine) })));
+        resultsByEngine.set(engineName(engine), rs);
         return true;
       },
       () => {
         markEngineDown(engine);
-        throw makeError("engine failed", "ENGINE_ERROR");
+        return false;
       }
-    )
-  );
+    );
+    taskByEngine.set(engine.name, task);
+  }
+  // 竞速专用视图：失败转 reject（Promise.any 只认成功），并预先挂 catch 避免未处理拒绝告警
+  const raceOf = (engine) => {
+    const p = taskByEngine.get(engine.name).then((ok) => (ok ? true : Promise.reject(new Error("engine failed"))));
+    p.catch(() => {});
+    return p;
+  };
 
-  try {
-    await Promise.any(tasks); // 等第一个引擎成功（全部失败才抛 AggregateError）
-    await sleep(XR_COLLECT_WINDOW); // 收集窗口：并入其余引擎已返回的结果
-  } catch {
-    /* 全部引擎失败，走下面统一抛错 */
+  const preferred = engines.find((e) => XR_ENGINE_META[e.name]?.preferred);
+  let preferredWon = false;
+
+  if (preferred) {
+    const preferredTask = taskByEngine.get(preferred.name);
+    const others = engines.filter((e) => e !== preferred);
+    if (!others.length) {
+      // 只有偏好引擎可用：直接等它（无需竞速）
+      preferredWon = await preferredTask;
+    } else {
+      // 偏好优先：自发起时刻起最多等 XR_PREFERRED_WAIT（绝对窗口，不受其他引擎快慢影响）；
+      // 偏好引擎已明确失败时会立即返回 false，不空等整个窗口
+      preferredWon = await Promise.race([
+        preferredTask,
+        sleep(XR_PREFERRED_WAIT).then(() => false),
+      ]);
+      if (!preferredWon) {
+        // 超时 → 回落到竞速（其他引擎多半已成功，此处通常立即返回）
+        await Promise.any(others.map(raceOf)).catch(() => {});
+      }
+    }
+  } else {
+    // 偏好引擎不在可用集合（未授权 / 冷却中）→ 纯竞速，不做任何额外等待
+    await Promise.any(engines.map(raceOf)).catch(() => {});
   }
 
-  if (!settled.length) throw makeError("联网搜索不可用", "SEARCH_ERROR");
-  return settled;
+  await sleep(preferredWon ? XR_PREFERRED_COLLECT : XR_COLLECT_WINDOW);
+
+  const collected = [];
+  for (const engine of engines) {
+    const rs = resultsByEngine.get(engineName(engine));
+    if (Array.isArray(rs) && rs.length) {
+      collected.push(...rs.map((r) => ({ ...r, engine: engineName(engine) })));
+    }
+  }
+  if (!collected.length) throw makeError("联网搜索不可用", "SEARCH_ERROR");
+  return collected;
 }
 
 // ---------- 多角度检索（v0.5：解决长推文/含年份的查询被无关结果淹没） ----------
@@ -488,21 +585,36 @@ function countRelevantHits(materials, text) {
   return hits;
 }
 
-/** 多查询并行检索（Promise.allSettled），结果汇总去重，返回前 N 条 */
+/** 多查询并行检索（Promise.allSettled）→ 按引擎可信度排序 + URL 去重 → 取前 N 条
+ *
+ *  排序规则（v1.1）：先按引擎权重降序（Google > Bing > DDG > 百度，权威信源优先进入模型视野），
+ *  同权重再按查询顺序（Q1 原文前 60 字语境最完整 → Q2 去年份前缀 → Q3 实体组合），最后按原始次序。
+ *  原实现按"引擎返回先后"拼接，先到的引擎易把名额吃满，权重高的信源反而可能被截断。 */
 async function searchMulti(queries) {
   const settled = await Promise.allSettled(queries.map((q) => webSearch(q)));
-  const all = [];
+
+  const merged = [];
+  settled.forEach((s, qi) => {
+    if (s.status !== "fulfilled" || !Array.isArray(s.value)) return;
+    s.value.forEach((r, ri) => merged.push({ ...r, _q: qi, _i: ri }));
+  });
+
+  merged.sort((a, b) => {
+    const dw = engineWeight(b.engine) - engineWeight(a.engine);
+    if (dw !== 0) return dw;
+    if (a._q !== b._q) return a._q - b._q;
+    return a._i - b._i;
+  });
+
   const seen = new Set();
-  for (const s of settled) {
-    if (s.status !== "fulfilled" || !Array.isArray(s.value)) continue;
-    for (const r of s.value) {
-      if (!seen.has(r.url)) {
-        seen.add(r.url);
-        all.push(r);
-      }
-    }
+  const out = [];
+  for (const r of merged) {
+    if (!r.url || seen.has(r.url)) continue;
+    seen.add(r.url);
+    out.push({ url: r.url, title: r.title, snippet: r.snippet, engine: r.engine });
+    if (out.length >= XR_SEARCH_MAX_RESULTS) break;
   }
-  return all.slice(0, XR_SEARCH_MAX_RESULTS);
+  return out;
 }
 
 // ---------- 配图处理 ----------
@@ -612,7 +724,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 // ---------- 核心逻辑 ----------
 
+/**
+ * 核查主流程
+ * @param {string} rawText 推文文本
+ * @param {string[]} rawImages 配图 URL
+ * @param {number} quotedChars 引用推文字数（回执用）
+ */
 async function checkText(rawText, rawImages, quotedChars) {
+  const t0 = Date.now();
   const fullText = String(rawText || "").trim();
   const text = fullText.slice(0, XR_MAX_TEXT_LEN);
   const textTruncated = fullText.length > XR_MAX_TEXT_LEN;
@@ -631,48 +750,59 @@ async function checkText(rawText, rawImages, quotedChars) {
   const cached = await readCachedResult(cacheKey);
   if (cached) return cached;
 
-  // 联网检索资料（多角度查询；全部失败时降级为纯知识分析）
-  let materials = [];
-  let searchFailed = false;
-  let searchHitEntities = true; // 搜索结果是否与推文核心实体相关
-  if (settings.enableSearch) {
-    const queries = buildSearchQueries(text);
-    materials = await searchMulti(queries);
-    if (!materials.length) searchFailed = true;
-    else searchHitEntities = countRelevantHits(materials, text) > 0;
-  } else {
-    searchFailed = true;
-  }
+  // 检索与配图互不依赖，并行执行（原来串行：先等完搜索再下载配图，白等一段）
 
-  // 配图：并行下载 + 压缩（已知不支持视觉的模型直接跳过）
-  const imageTotal = imageUrls.length;
-  let imageDataUrls = [];
-  let imageFailed = 0;
-  if (imageTotal) {
+  // 联检任务：多角度查询；全部失败时返回空数组，降级为纯知识分析
+  const searchTask = settings.enableSearch
+    ? searchMulti(buildSearchQueries(text)).catch(() => [])
+    : Promise.resolve([]);
+
+  // 配图任务：并行下载 + 压缩（已知不支持视觉的模型直接跳过）
+  const imageTask = (async () => {
+    const imageTotal = imageUrls.length;
+    if (!imageTotal) return { imageDataUrls: [], imageFailed: 0 };
     const stored = await chrome.storage.local.get(XR_CAPS_KEY);
     const cap = (stored[XR_CAPS_KEY] || {})[settings.model];
-    const imageAllowed =
-      (!cap || cap.vision !== "no") && (await hasOrigins(XR_IMAGE_ORIGINS));
-    if (imageAllowed) {
-      const settled = await Promise.allSettled(imageUrls.map((u) => downloadImageAsDataUrl(u)));
-      for (const s of settled) {
-        if (s.status === "fulfilled") imageDataUrls.push(s.value);
-        else imageFailed++;
-      }
-    } else {
-      // 模型不支持视觉 或 未授权配图域（pbs.twimg.com）：不下载，直接全部计入"未分析"
-      imageFailed = imageTotal;
+    const imageAllowed = (!cap || cap.vision !== "no") && (await hasOrigins(XR_IMAGE_ORIGINS));
+    if (!imageAllowed) {
+      // 模型不支持视觉 或 未授权配图域（pbs.twimg.com）：不下载，全部计入"未分析"
+      return { imageDataUrls: [], imageFailed: imageTotal };
     }
-  }
+    const imageDataUrls = [];
+    let imageFailed = 0;
+    const settled = await Promise.allSettled(imageUrls.map((u) => downloadImageAsDataUrl(u)));
+    for (const s of settled) {
+      if (s.status === "fulfilled") imageDataUrls.push(s.value);
+      else imageFailed++;
+    }
+    return { imageDataUrls, imageFailed };
+  })();
 
+  const [materials, imgPack] = await Promise.all([searchTask, imageTask]);
+  const searchFailed = !materials.length; // 检索关闭时 materials 为空，同样按"无资料"处理
+  const searchHitEntities = searchFailed ? false : countRelevantHits(materials, text) > 0;
+  const prepMs = Date.now() - t0;
+
+  // 配图结果（由 imageTask 并行产出）
+  const imageTotal = imageUrls.length;
+  const imageDataUrls = imgPack.imageDataUrls;
+  const imageFailed = imgPack.imageFailed;
+
+  // ---------- 模型分析 ----------
+  const tLlm = Date.now();
   const result = await analyzeWithModel(text, settings, materials, imageDataUrls, {
     searchFailed,
     searchHitEntities,
   });
+  const llmMs = Date.now() - tLlm;
 
-  // ---------- 谣言复核关：搜索失败/无有效资料时判 rumor，必须复核 ----------
+  // ---------- 谣言复核关：本次未取到检索资料、却判 rumor 时必须复核 ----------
   // 防止模型在无证据情况下以"没听说过/无媒体报道"给真实事件扣谣言帽（实测高频误判路径）
-  if (result.verdict === "rumor" && !result.searched) {
+  // 触发依据：searchFailed = 本次检索为空（含联网搜索关闭）。
+  // 历史上此处误用尚未赋值的 result.searched，导致条件恒真、所有 rumor 都多跑一轮模型。勿改回。
+  let verifyMs = 0;
+  if (result.verdict === "rumor" && searchFailed) {
+    const tVerify = Date.now();
     try {
       const content = await callLLM(text, settings, {
         images: imageDataUrls,
@@ -687,6 +817,7 @@ async function checkText(rawText, rawImages, quotedChars) {
     } catch {
       /* 复核失败时保留原判定 */
     }
+    verifyMs = Date.now() - tVerify;
   }
 
   // ---------- 内容回执（供卡片展示，让用户确认模型实际读到了什么） ----------
@@ -700,6 +831,8 @@ async function checkText(rawText, rawImages, quotedChars) {
   // 走图被模型拒绝后降级纯文本时，skippedImages 已置 true，配图全部未纳入
   result.imageCount = result.skippedImages ? 0 : imageDataUrls.length;
   result.imageFailed = result.skippedImages ? imageTotal : imageFailed;
+  // 分段耗时（prep = 检索与配图并行阶段；llm/verify 为模型调用）
+  result.timing = { prepMs, llmMs, verifyMs, totalMs: Date.now() - t0 };
 
   writeCachedResult(cacheKey, result);
   pushHistory(text, result).catch(() => {});
@@ -899,8 +1032,8 @@ async function testVision(overrides) {
   };
 }
 
-/** 发起 chat/completions 请求（网络层失败统一转 NETWORK_ERROR） */
-async function postChat(settings, body) {
+/** 发起 chat/completions 请求（网络层失败统一转 NETWORK_ERROR；signal 用于整体超时中断） */
+async function postChat(settings, body, signal) {
   const apiPattern = apiOriginPattern(settings);
   if (apiPattern && !(await hasOrigins([apiPattern]))) {
     throw makeError(
@@ -913,6 +1046,7 @@ async function postChat(settings, body) {
       method: "POST",
       headers: authHeaders(settings),
       body: JSON.stringify(body),
+      signal,
     });
   } catch {
     throw makeError("网络请求失败，请检查接口地址与网络连接", "NETWORK_ERROR");
@@ -967,34 +1101,49 @@ async function callLLM(text, settings, opts = {}) {
     body.response_format = { type: "json_object" };
   }
 
-  let res = await postChat(settings, body);
-  // 个别服务商不支持 response_format：识别相关报错后去掉该参数重试一次
-  if (!res.ok && body.response_format) {
-    const d1 = await readErrorDetail(res);
-    if (res.status === 400 || /response_format|json_object|json mode/i.test(d1)) {
-      delete body.response_format;
-      res = await postChat(settings, body);
-    }
-  }
-
-  if (!res.ok) {
-    const detail = await readErrorDetail(res);
-    throw makeError(
-      `接口请求失败 (HTTP ${res.status})${detail ? "：" + detail : ""}`,
-      "API_ERROR"
-    );
-  }
-
-  let data;
+  // 整体超时：覆盖"请求 + 重试 + 读取响应"，避免接口卡住时无限等待
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), XR_LLM_TIMEOUT);
   try {
-    data = await res.json();
-  } catch {
-    throw makeError("接口返回的不是有效 JSON", "API_ERROR");
-  }
+    let res = await postChat(settings, body, ctrl.signal);
+    // 个别服务商不支持 response_format：识别相关报错后去掉该参数重试一次
+    if (!res.ok && body.response_format) {
+      const d1 = await readErrorDetail(res);
+      if (res.status === 400 || /response_format|json_object|json mode/i.test(d1)) {
+        delete body.response_format;
+        res = await postChat(settings, body, ctrl.signal);
+      }
+    }
 
-  const content = data?.choices?.[0]?.message?.content;
-  if (!content) throw makeError("接口返回内容为空", "API_ERROR");
-  return content;
+    if (!res.ok) {
+      const detail = await readErrorDetail(res);
+      throw makeError(
+        `接口请求失败 (HTTP ${res.status})${detail ? "：" + detail : ""}`,
+        "API_ERROR"
+      );
+    }
+
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw makeError("接口返回的不是有效 JSON", "API_ERROR");
+    }
+
+    const content = data?.choices?.[0]?.message?.content;
+    if (!content) throw makeError("接口返回内容为空", "API_ERROR");
+    return content;
+  } catch (err) {
+    if (ctrl.signal.aborted) {
+      throw makeError(
+        `模型 ${XR_LLM_TIMEOUT / 1000}s 未返回已中断，请重试或改用更快的模型`,
+        "TIMEOUT"
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 const XR_VERDICTS = new Set(["rumor", "not_rumor", "suspected"]);

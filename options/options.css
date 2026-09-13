@@ -1,6 +1,6 @@
 /* X-Really options 「核查情报台」设计
  * 设计语言：深空指挥台——玻璃拟态面板、渐变色引擎、步骤编号、概览仪表盘。
- * 保留 options.js 依赖的全部类名（preset*/chip/cap-badge/switch/...），仅重构视觉与排版。 */
+ * 保留 options.js 依赖的全部类名（preset*/chip/switch/field-inline/...），仅重构视觉与排版。 */
 
 /* ---------- 背景：深空 + 淡网格 + 辉光 ---------- */
 
@@ -99,7 +99,7 @@ body {
 
 .dashboard {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
   margin-bottom: 14px;
 }
@@ -330,6 +330,27 @@ body {
   color: #a78bfa;
 }
 
+/* 折叠的「更多服务商」与展开按钮 */
+.preset.extra.hidden {
+  display: none !important;
+}
+.preset-toggle {
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  color: #aab4c0;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+.preset-toggle:hover {
+  border-color: rgba(99, 102, 241, 0.6);
+  color: var(--text);
+}
+
 /* ---------- 表单 ---------- */
 
 .field {
@@ -346,16 +367,23 @@ body {
   letter-spacing: 0.02em;
   margin-bottom: 7px;
 }
-.field-label .opt {
-  font-style: normal;
-  font-size: 10px;
-  font-weight: 700;
-  color: #a78bfa;
-  border: 1px solid rgba(167, 139, 250, 0.35);
-  background: rgba(167, 139, 250, 0.1);
-  padding: 1px 7px;
-  border-radius: 999px;
-  margin-left: 3px;
+/* label 与 input 同排的行内变体（模型一行）；chips / hint 仍独占整行 */
+.field-inline {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 10px;
+  align-items: center;
+}
+.field-inline > .field-label {
+  margin: 0;
+}
+.field-inline > .input-row {
+  grid-column: 2;
+  min-width: 0;
+}
+.field-inline > .chips,
+.field-inline > .hint {
+  grid-column: 1 / -1;
 }
 .input-row {
   display: flex;
@@ -562,72 +590,24 @@ body {
   color: var(--muted);
 }
 
-/* ---------- 能力检测 ---------- */
+/* ---------- 隐私说明（保存下方小字） ---------- */
 
-.cap-row {
+.priv-line {
   display: flex;
   align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.cap-badge {
-  font-size: 12.5px;
-  font-weight: 700;
-  padding: 5px 13px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  white-space: nowrap;
-}
-.cap-badge.yes {
-  color: var(--ok);
-  border-color: rgba(16, 185, 129, 0.4);
-  background: rgba(16, 185, 129, 0.08);
-}
-.cap-badge.no {
-  color: var(--danger);
-  border-color: rgba(244, 63, 94, 0.4);
-  background: rgba(244, 63, 94, 0.08);
-}
-.cap-badge.unknown {
-  color: #94a3b8;
-}
-.cap-note {
-  font-size: 12px;
-  color: var(--muted);
-  min-width: 0;
-}
-
-/* ---------- 隐私说明 ---------- */
-
-.priv-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 18px;
-  border-radius: 14px;
-  margin-bottom: 14px;
-  background: rgba(16, 185, 129, 0.05);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  justify-content: center;
+  gap: 8px;
+  margin: 12px 2px 0;
+  font-size: 11.5px;
+  color: #7f9b8e;
 }
 .priv-dot {
   flex: none;
-  width: 9px;
-  height: 9px;
-  margin-top: 5px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--ok);
-  box-shadow: 0 0 10px rgba(16, 185, 129, 0.8);
-}
-.priv-note b {
-  font-size: 12.5px;
-  color: #c8d6cf;
-}
-.priv-note p {
-  margin: 3px 0 0;
-  font-size: 11.5px;
-  color: #7f9b8e;
-  line-height: 1.5;
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.7);
 }
 
 /* ---------- 操作区（吸底） ---------- */
