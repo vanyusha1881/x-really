@@ -13,6 +13,42 @@ const XR_MODEL_CACHE_KEY = "xrModelCache"; // { [cacheKey]: { ts, models } }
 const XR_CAPS_CACHE_KEY = "xrCaps"; // { [model]: { vision, note, ts } }
 const XR_CACHE_TTL = 24 * 3600 * 1000;
 
+// ---------- 可选主机权限（必需权限仅 x.com，其余域在用户手势中按需申请） ----------
+
+const XR_SEARCH_ORIGIN_PATTERNS = [
+  "https://www.google.com/*",
+  "https://www.bing.com/*",
+  "https://html.duckduckgo.com/*",
+  "https://www.baidu.com/*",
+];
+const XR_IMAGE_ORIGIN_PATTERN = "https://pbs.twimg.com/*";
+
+function apiOriginPattern(baseUrl) {
+  try {
+    const u = new URL(baseUrl);
+    return u.protocol + "//" + u.hostname + "/*"; // match pattern 不支持端口
+  } catch {
+    return null;
+  }
+}
+
+/** 在用户手势（点击）中调用：为接口地址 + 四个搜索引擎 + 推文配图域统一申请可选权限。
+ *  已授权过的来源不会重复弹窗；用户拒绝则返回 false，功能按已有降级路径处理。 */
+async function ensureHostPermissions(s) {
+  const origins = [
+    ...new Set(
+      [apiOriginPattern(s.baseUrl), ...XR_SEARCH_ORIGIN_PATTERNS, XR_IMAGE_ORIGIN_PATTERN].filter(
+        Boolean
+      )
+    ),
+  ];
+  try {
+    return await chrome.permissions.request({ origins });
+  } catch {
+    return false;
+  }
+}
+
 const $ = (id) => document.getElementById(id);
 
 // ---------- 基础工具 ----------
@@ -85,6 +121,7 @@ function applyPreset(p) {
   renderChips(p);
   updateKeyLink(p);
   updateCapBadge(); // 切换模型后同步刷新静态能力识别
+  updateOverview();
   markDirty();
 }
 
@@ -99,6 +136,7 @@ function renderChips(p) {
     chip.addEventListener("click", () => {
       $("optModel").value = m;
       updateCapBadge();
+      updateOverview();
       markDirty();
     });
     box.appendChild(chip);
@@ -124,7 +162,15 @@ async function fetchModels() {
   const hint = $("fetchHint");
 
   // 先保存再拉取，保证后台读到的 baseUrl / Key 与界面一致
-  await chrome.storage.sync.set(collectSettings());
+  const s = collectSettings();
+  await chrome.storage.sync.set(s);
+
+  // 拉取走接口域名，先确保已授权（点击即手势）
+  if (!(await ensureHostPermissions(s))) {
+    hint.className = "hint";
+    hint.textContent = "❌ 未授予接口访问权限，无法拉取模型列表";
+    return;
+  }
 
   btn.disabled = true;
   btn.innerHTML = '<span class="xr-spin"></span> 拉取中…';
@@ -212,6 +258,7 @@ function renderModelList(filter) {
       $("optModel").value = item.name;
       closeDrop();
       updateCapBadge();
+      updateOverview();
       markDirty();
     });
     list.appendChild(li);
@@ -274,7 +321,14 @@ async function runVisionTest() {
   const note = $("capNote");
 
   // 先保存再实测
-  await chrome.storage.sync.set(collectSettings());
+  const s = collectSettings();
+  await chrome.storage.sync.set(s);
+
+  // 实测走接口域名，先确保已授权（点击即手势）
+  if (!(await ensureHostPermissions(s))) {
+    note.textContent = "未授予接口访问权限，无法实测";
+    return;
+  }
 
   btn.disabled = true;
   note.textContent = "正在发送测试图片…";
@@ -307,6 +361,38 @@ async function runVisionTest() {
   }
 }
 
+// ---------- 配置概览（顶部仪表盘） ----------
+
+async function updateOverview() {
+  const baseUrl = $("optBaseUrl").value.trim();
+  const model = $("optModel").value.trim();
+  const search = $("optSearch").checked;
+
+  // 服务商名
+  const p = xrFindProvider(baseUrl);
+  $("ovProvider").textContent = p ? p.name : baseUrl ? "自定义" : "未配置";
+
+  // 模型
+  $("ovModel").textContent = model || "未选择";
+
+  // 联网搜索
+  const ovSearch = $("ovSearch");
+  ovSearch.textContent = search ? "开启" : "已关";
+  ovSearch.className = "pill " + (search ? "st-on" : "st-off");
+
+  // 图片理解：优先实测缓存，其次静态识别
+  let vision = xrDetectVisionStatic(model);
+  if (model) {
+    const stored = await chrome.storage.local.get(XR_CAPS_CACHE_KEY);
+    const tested = (stored[XR_CAPS_CACHE_KEY] || {})[model];
+    if (tested) vision = tested.vision;
+  }
+  const ovVision = $("ovVision");
+  const map = { yes: "st-yes", no: "st-no", unknown: "st-neu" };
+  ovVision.textContent = vision === "yes" ? "支持" : vision === "no" ? "不支持" : "未配置";
+  ovVision.className = "pill " + map[vision];
+}
+
 // ---------- 读取 / 保存 / 测试连接 ----------
 
 async function loadSettings() {
@@ -323,6 +409,7 @@ async function loadSettings() {
   renderChips(p || XR_PROVIDERS[XR_PROVIDERS.length - 1]);
   updateKeyLink(p);
   updateCapBadge();
+  updateOverview();
 }
 
 /**
@@ -368,6 +455,19 @@ async function save() {
   await chrome.storage.sync.set({ ...s, provider: currentProviderId });
   $("dirtyHint").classList.add("hidden");
   updateCapBadge();
+  updateOverview();
+
+  // 保存即授权：为接口地址 + 搜索引擎 + 配图域申请可选权限（已授权则静默通过）
+  const granted = await ensureHostPermissions(s);
+  if (!granted) {
+    setTestResult(
+      "⚠️ 已保存，但未授予网络访问权限：AI 调用与联网核查将不可用。重新点击「保存设置」可再次授权",
+      "warn"
+    );
+    showToast("⚠️ 已保存，但缺少网络访问授权");
+    return;
+  }
+
   if (hint.note) {
     setTestResult(hint.note, "info");
     showToast("✅ 已保存（纯文字模式）");
@@ -382,7 +482,14 @@ async function testConnection() {
   const btn = $("testBtn");
 
   // 先保存再测试，保证测试的是当前填写的配置
-  await chrome.storage.sync.set({ ...collectSettings(), provider: currentProviderId });
+  const s = collectSettings();
+  await chrome.storage.sync.set({ ...s, provider: currentProviderId });
+
+  // 连接走接口域名，先确保已授权（点击即手势）
+  if (!(await ensureHostPermissions(s))) {
+    setTestResult("❌ 未授予接口访问权限，无法测试连接", "err");
+    return;
+  }
 
   btn.disabled = true;
   setTestResult("⏳ 正在连接…", "info");
@@ -427,6 +534,7 @@ $("optModel").addEventListener("focus", openDrop);
 $("optModel").addEventListener("input", () => {
   openDrop();
   updateCapBadge();
+  updateOverview();
   markDirty();
 });
 $("modelSearch").addEventListener("input", (e) => renderModelList(e.target.value));
@@ -441,11 +549,15 @@ document.addEventListener("keydown", (e) => {
 for (const id of ["optBaseUrl", "optApiKey"]) {
   $(id).addEventListener("input", markDirty);
 }
-$("optSearch").addEventListener("change", markDirty);
+$("optSearch").addEventListener("change", () => {
+  markDirty();
+  updateOverview();
+});
 $("optBaseUrl").addEventListener("change", async () => {
   // baseUrl 变化时重新匹配预设（仅更新高亮与链接，不覆盖用户输入）
   const p = xrFindProvider($("optBaseUrl").value.trim());
   currentProviderId = p ? p.id : "custom";
   renderPresetGrid();
   updateKeyLink(p);
+  updateOverview();
 });

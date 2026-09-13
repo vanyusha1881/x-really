@@ -18,7 +18,10 @@ shared/ui.js             # 判定元数据 + 结果卡片 DOM 构建（content �
 shared/providers.js       # 服务商预设 + 多模态静态识别
 popup/                   # 工具栏弹窗：手动文本检查 + 历史
 options/                 # 设置页：API 配置 / 模型拉取 / 多模态实测
-tools/generate_icons.py  # 图标生成（无第三方依赖）
+tools/generate_icons.py  # 程序化绘制图标（纯标准库，旧盾牌方案，留作参考）
+tools/build_icons.py     # 从 icons/source-logo.jpg 生成图标集（需 Pillow：抠图 + 多尺寸锐化 + 小尺寸主体放大）
+                         #   改设计稿后：python tools/build_icons.py 重新生成 icon16/32/48/128 + icon.png
+                         #   注意：icons/icon.png 与 source-logo.jpg 仅作源文件，不打进商店 zip
 ```
 
 改判定逻辑 → `service-worker.js`；改卡片展示 → `shared/ui.js`（注意 popup 也用它）。

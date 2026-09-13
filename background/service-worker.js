@@ -1,4 +1,7 @@
 // X-Really 后台服务：接收检查请求，联网检索资料 + 调用 OpenAI 兼容接口完成谣言核查
+// v1.0.0: 首个正式版——必需 host 权限仅 x.com，API/搜索引擎/配图域改为可选权限并按下述门控：
+//         设置页保存时统一申请，后台按权限校验（未授权引擎跳过、API 域缺失给引导性报错）；
+//         本地服务（localhost/127.0.0.1，如 Ollama）允许无 API Key 完成核查
 // v0.8: 搜索引擎并行竞速（原串行降级在 Google 不可达时每查询白等 10s）；
 //       配图并行下载 + 压缩（768px JPEG），结果 30 分钟缓存，提示词改为证据中立版（双向防误判）
 // v0.5: 多角度检索（实体提取 + 去年份前缀）+ 搜索结果相关性提示
@@ -335,6 +338,34 @@ const XR_SEARCH_ENGINES = [searchGoogle, searchBing, searchDuckDuckGo, searchBai
 const XR_ENGINE_TTL = 30 * 60 * 1000;
 const xrEngineDown = new Map();
 
+// ---------- 可选权限门控（v1.0：必需 host 权限仅 x.com，其余域按需授权） ----------
+// 各引擎抓取的来源域；未授权的引擎自动跳过（不计入"故障冷却"，权限恢复后立即可用）
+const XR_ENGINE_ORIGINS = {
+  searchGoogle: "https://www.google.com/*",
+  searchBing: "https://www.bing.com/*",
+  searchDuckDuckGo: "https://html.duckduckgo.com/*",
+  searchBaidu: "https://www.baidu.com/*",
+};
+const XR_IMAGE_ORIGINS = ["https://pbs.twimg.com/*"];
+
+async function hasOrigins(patterns) {
+  try {
+    return await chrome.permissions.contains({ origins: patterns });
+  } catch {
+    return false;
+  }
+}
+
+/** 由 baseUrl 推导权限来源模式（match pattern 不支持端口，故剥离端口） */
+function apiOriginPattern(settings) {
+  try {
+    const u = new URL(settings.baseUrl);
+    return u.protocol + "//" + u.hostname + "/*";
+  } catch {
+    return null;
+  }
+}
+
 function engineName(engine) {
   return engine.name.replace("search", "");
 }
@@ -358,7 +389,16 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 async function webSearch(query) {
   const q = query.replace(/\s+/g, " ").trim().slice(0, 120);
-  const engines = XR_SEARCH_ENGINES.filter(engineAvailable);
+  // 健康度 + 可选权限双重过滤：未授权的引擎不发起请求（也不计入故障冷却）
+  const permitted = await Promise.all(
+    XR_SEARCH_ENGINES.map(async (engine) => {
+      const pattern = XR_ENGINE_ORIGINS[engine.name];
+      return engine && pattern ? await hasOrigins([pattern]) : false;
+    })
+  );
+  const engines = XR_SEARCH_ENGINES.filter(
+    (engine, i) => engineAvailable(engine) && permitted[i]
+  );
   if (!engines.length) throw makeError("联网搜索不可用", "SEARCH_ERROR");
 
   const settled = [];
@@ -579,7 +619,9 @@ async function checkText(rawText, rawImages, quotedChars) {
   if (!text) throw makeError("请提供要检查的文本", "EMPTY_TEXT");
 
   const settings = await getSettings();
-  if (!settings.apiKey) {
+  // 本地服务（Ollama 等 localhost/127.0.0.1）允许无 API Key；云端接口必须有 Key
+  const isLocal = /localhost|127\.0\.0\.1/.test(settings.baseUrl || "");
+  if (!settings.apiKey && !isLocal) {
     throw makeError("尚未配置 API Key，请先在扩展设置中完成配置", "NO_API_KEY");
   }
 
@@ -609,14 +651,16 @@ async function checkText(rawText, rawImages, quotedChars) {
   if (imageTotal) {
     const stored = await chrome.storage.local.get(XR_CAPS_KEY);
     const cap = (stored[XR_CAPS_KEY] || {})[settings.model];
-    if (!cap || cap.vision !== "no") {
+    const imageAllowed =
+      (!cap || cap.vision !== "no") && (await hasOrigins(XR_IMAGE_ORIGINS));
+    if (imageAllowed) {
       const settled = await Promise.allSettled(imageUrls.map((u) => downloadImageAsDataUrl(u)));
       for (const s of settled) {
         if (s.status === "fulfilled") imageDataUrls.push(s.value);
         else imageFailed++;
       }
     } else {
-      // 已确认模型不支持视觉：不下载，直接全部计入"未分析"
+      // 模型不支持视觉 或 未授权配图域（pbs.twimg.com）：不下载，直接全部计入"未分析"
       imageFailed = imageTotal;
     }
   }
@@ -751,6 +795,14 @@ async function listModels() {
   const settings = await getSettings();
   await requireEndpoint(settings);
 
+  const apiPattern = apiOriginPattern(settings);
+  if (apiPattern && !(await hasOrigins([apiPattern]))) {
+    throw makeError(
+      "尚未授权访问该接口地址，请在设置页点击「保存设置」完成授权后重试",
+      "PERMISSION_ERROR"
+    );
+  }
+
   let res;
   try {
     res = await fetch(apiUrl(settings, "/models"), {
@@ -849,6 +901,13 @@ async function testVision(overrides) {
 
 /** 发起 chat/completions 请求（网络层失败统一转 NETWORK_ERROR） */
 async function postChat(settings, body) {
+  const apiPattern = apiOriginPattern(settings);
+  if (apiPattern && !(await hasOrigins([apiPattern]))) {
+    throw makeError(
+      "尚未授权访问该接口地址，请打开扩展设置点击「保存设置」重新授权",
+      "PERMISSION_ERROR"
+    );
+  }
   try {
     return await fetch(apiUrl(settings, "/chat/completions"), {
       method: "POST",

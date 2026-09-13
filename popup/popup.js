@@ -22,8 +22,9 @@ const IDLE_BTN_HTML = `
 async function refreshStatus() {
   const s = { ...XR_DEFAULTS, ...(await chrome.storage.sync.get(XR_DEFAULTS)) };
   const bar = $("statusBar");
+  const isLocal = /localhost|127\.0\.0\.1/.test(s.baseUrl || "");
 
-  if (!s.apiKey) {
+  if (!s.apiKey && !isLocal) {
     bar.className = "status warn";
     bar.innerHTML =
       '⚠️ 尚未配置 API，检查功能不可用 <button class="text-btn" id="goCfg">去配置 →</button>';

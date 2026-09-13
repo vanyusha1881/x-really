@@ -2,16 +2,20 @@
   "manifest_version": 3,
   "name": "X-Really · 推文谣言检查器",
   "description": "在 X (Twitter) 上检查推文内容是否为谣言：AI 分析可信度、给出理由与建议。支持任意 OpenAI 兼容接口。",
-  "version": "0.8.0",
+  "version": "1.0.0",
+  "author": "X-Really",
+  "homepage_url": "https://github.com/vanyusha1881/x-really",
   "icons": {
     "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
   "permissions": ["storage"],
   "host_permissions": [
-    "https://x.com/*",
-    "https://twitter.com/*",
+    "https://x.com/*"
+  ],
+  "optional_host_permissions": [
     "https://*/*",
     "http://localhost/*",
     "http://127.0.0.1/*"
@@ -21,7 +25,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "matches": ["https://x.com/*"],
       "js": ["shared/ui.js", "content/content.js"],
       "css": ["content/content.css"],
       "run_at": "document_idle"
@@ -32,6 +36,7 @@
     "default_title": "X-Really 谣言检查",
     "default_icon": {
       "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
     }

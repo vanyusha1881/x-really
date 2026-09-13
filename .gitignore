@@ -144,3 +144,7 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Chrome Web Store 发布产物
+_release/
+x-really-v*.zip
